@@ -1,7 +1,8 @@
 
 #[derive(Debug)]
 pub(crate) enum AlertLevel {
-    Emergency,
+    Alarm,
+    Critical,
     Warning,
     Info
 }

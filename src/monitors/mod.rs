@@ -1,4 +1,4 @@
-mod processes;
+mod services;
 mod power;
 mod internet;
 mod cctv;
@@ -7,12 +7,11 @@ use anyhow::Result;
 use std::time::Duration;
 use async_trait::async_trait;
 use log::{debug, error, info};
-use serde::Deserialize;
 use tokio::time::interval;
 
 use crate::alerts::{AlertInfo, AlertLevel, send_alert};
 use crate::monitors::internet::InternetMonitor;
-use crate::monitors::power::PowerMonitor;
+use crate::monitors::services::ServicesMonitor;
 
 #[async_trait]
 pub(crate) trait Monitor: Send + Sync + 'static {
@@ -24,8 +23,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     async fn run(&mut self) -> Result<Option<AlertInfo>>;
 
     /// Create an alert to return in run with the monitor name as the source.
-    fn create_alert(&self, message: String, level: AlertLevel) -> AlertInfo
-    {
+    fn create_alert(&self, message: String, level: AlertLevel) -> AlertInfo {
         AlertInfo {
             source: self.name(),
             message,
@@ -55,6 +53,6 @@ pub(crate) async fn spawn_monitors() {
     info!("Spawning monitors");
 
     tokio::spawn(run_monitor(InternetMonitor::default()));
-    tokio::spawn(run_monitor(PowerMonitor::default()));
+    tokio::spawn(run_monitor(ServicesMonitor::default()));
 }
 

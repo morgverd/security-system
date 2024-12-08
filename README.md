@@ -19,7 +19,7 @@ The system can also send alerts if a monitor fails, this is used to verify that 
 - `cctv` - Verify that the DVR is still online within the network.
 - `internet` - Verify that there is still an internet connection to send alarm notifications.
 - `power` - Verify that the Pi still has a direct power connection (as it runs through a battery).
-- `processes` - Verify that the other local processes are running (CCTV SMTP, Alarm Modem)
+- `services` - Verify that the other local systemctl services are running (CCTV SMTP, Alarm Modem)
 
 ### Alerts
 
