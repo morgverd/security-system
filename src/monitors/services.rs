@@ -34,12 +34,12 @@ impl ServicesMonitor {
     }
 
     fn create_services_alert(&self, now_offline: &[String], now_online: &[String]) -> Option<AlertInfo> {
-        if now_offline.is_empty() && now_offline.is_empty() {
+        if now_offline.is_empty() && now_online.is_empty() {
             debug!("No service status changes!");
             return None;
         }
 
-        let message = now_online.iter()
+        let message = now_offline.iter()
             .chain(now_online.iter())
             .cloned()
             .collect::<Vec<_>>()
