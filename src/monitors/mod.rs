@@ -1,58 +1,74 @@
 mod services;
 mod power;
-mod internet;
 mod cctv;
+mod sentry;
 
 use anyhow::Result;
-use std::time::Duration;
 use async_trait::async_trait;
-use log::{debug, error, info};
-use tokio::time::interval;
-
+use log::{debug, error, info, warn};
+use tokio::task::JoinHandle;
 use crate::alerts::{AlertInfo, AlertLevel, send_alert};
-use crate::monitors::internet::InternetMonitor;
+use crate::config::EnvConfig;
+use crate::monitors::sentry::SentryCronMonitor;
 use crate::monitors::services::ServicesMonitor;
 
 #[async_trait]
 pub(crate) trait Monitor: Send + Sync + 'static {
 
-    fn name(&self) -> &'static str;
-    fn interval(&self) -> Duration;
+    /// Returns the static monitor name.
+    fn name() -> &'static str;
 
-    /// Run the Monitor, returning an Optional alert to send.
-    async fn run(&mut self) -> Result<Option<AlertInfo>>;
+    /// Creates a new monitor instance with given configuration.
+    /// Implementations can override this for custom initialization.
+    /// If None is returned, the monitor is not run.
+    fn from_config(config: &EnvConfig) -> Option<Self>
+    where
+        Self: Sized;
 
-    /// Create an alert to return in run with the monitor name as the source.
-    fn create_alert(&self, message: String, level: AlertLevel) -> AlertInfo {
-        AlertInfo {
-            source: self.name(),
+    /// Run the monitor forever, returning an Err result to throw to Sentry.
+    /// The monitor is always restarted after any return value.
+    async fn run(&mut self) -> Result<()>;
+
+    /// Helper method to send alerts with the monitors name as the source.
+    async fn send_alert(message: String, level: AlertLevel) -> Result<()> {
+        send_alert(AlertInfo {
+            source: Self::name().to_string(),
             message,
             level
-        }
+        }).await
     }
 }
 
-async fn run_monitor(mut monitor: impl Monitor) {
-    let mut interval = interval(monitor.interval());
-    debug!("Spawned monitor: {}", monitor.name());
+async fn run_monitor<T: Monitor>(mut monitor: T) {
+    debug!("Spawned monitor: {}", T::name());
 
     loop {
-        interval.tick().await;
         match monitor.run().await {
-            Ok(Some(alert)) => {
-                info!("Sending alert from monitor: {}", monitor.name());
-                send_alert(alert).await;
-            },
-            Ok(None) => (),
-            Err(e) => error!("Error running monitor {}: {e:?}", monitor.name())
+            Ok(_) => info!("Restarting monitor {}!", T::name()),
+            Err(e) => error!("Error in monitor {}: {:#?}", T::name(), e)
         }
     }
 }
 
-pub(crate) async fn spawn_monitors() {
+fn spawn_if_enabled<T: Monitor>(config: &EnvConfig) -> Option<JoinHandle<()>> {
+    match T::from_config(config) {
+        Some(monitor) => Some(tokio::spawn(run_monitor(monitor))),
+        None => {
+            warn!("Monitor {} is disabled or has invalid configuration!", T::name());
+            None
+        }
+    }
+}
+
+pub(crate) async fn spawn_monitors(config: &EnvConfig) -> Vec<JoinHandle<()>> {
     info!("Spawning monitors");
 
-    tokio::spawn(run_monitor(InternetMonitor::default()));
-    tokio::spawn(run_monitor(ServicesMonitor::default()));
+    vec![
+        spawn_if_enabled::<SentryCronMonitor>(config),
+        spawn_if_enabled::<ServicesMonitor>(config)
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 

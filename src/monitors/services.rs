@@ -1,9 +1,11 @@
 use std::time::Duration;
 use async_trait::async_trait;
 use anyhow::Result;
-use log::{debug, info};
+use log::{debug, error, info, warn};
 use tokio::process::Command;
-use crate::alerts::{AlertInfo, AlertLevel};
+use tokio::time::{interval, sleep};
+use crate::alerts::AlertLevel;
+use crate::config::EnvConfig;
 use crate::monitors::Monitor;
 
 /*
@@ -12,17 +14,29 @@ use crate::monitors::Monitor;
     a critical warning only if it's the Alarm Modem, otherwise a warning.
  */
 
-const MONITORED_SERVICES: [&str; 1] = [
+const RETRY_ATTEMPTS: u8 = 3;
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+
+const MONITORED_SERVICES: [(&str, AlertLevel); 1] = [
     // "security_cctv_smtp",
-    // "security_cctv_proxy",
-    "security_alarm_modem"
+    // ("security_cctv_proxy", AlertLevel::Warning),
+    ("security_alarm_modem", AlertLevel::Critical)
 ];
 
-#[derive(Default)]
-pub(crate) struct ServicesMonitor {
-    offline_services: Vec<String>
+struct MonitoredServiceState {
+    name: String,
+    level: AlertLevel,
+    is_offline: bool,
+    retry_count: u8
 }
+
+pub(crate) struct ServicesMonitor {
+    services: Vec<MonitoredServiceState>,
+    interval: u64
+}
+
 impl ServicesMonitor {
+
     async fn is_service_active(name: &str) -> Result<bool> {
         let output = Command::new("systemctl")
             .arg("is-active")
@@ -33,51 +47,108 @@ impl ServicesMonitor {
         Ok(output.status.success())
     }
 
-    fn create_services_alert(&self, now_offline: &[String], now_online: &[String]) -> Option<AlertInfo> {
-        if now_offline.is_empty() && now_online.is_empty() {
-            debug!("No service status changes!");
-            return None;
+    async fn attempt_service_restart(name: &str) -> Result<bool> {
+        let output = Command::new("systemctl")
+            .arg("restart")
+            .arg(name)
+            .output()
+            .await?;
+
+        Ok(output.status.success())
+    }
+
+    async fn handle_offline_service(service: &mut MonitoredServiceState) -> Result<()> {
+        service.retry_count += 1;
+
+        // Keep retrying restarts until the retry limit is met.
+        info!(
+            "Service {} is offline, restart attempt {}/{}.",
+            service.name,
+            service.retry_count,
+            RETRY_ATTEMPTS
+        );
+        if service.retry_count <= RETRY_ATTEMPTS {
+            sleep(RETRY_DELAY).await;
+
+            info!("Attempting to restart service {}!", &service.name);
+            if Self::attempt_service_restart(&service.name).await? {
+
+                info!("Service {} was successfully restarted!", &service.name);
+                service.retry_count = 0;
+                return Ok(());
+            }
         }
 
-        let message = now_offline.iter()
-            .chain(now_online.iter())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+        // The service is now offline, either due to exceeding RETRY_ATTEMPTS
+        // or because the systemctl restart service command directly failed.
+        if !service.is_offline {
+            service.is_offline = true;
+            Self::send_alert(format!("{} is OFFLINE after {} attempts to restart!", service.name, service.retry_count), service.level.clone()).await?;
+        }
 
-        info!("Services: {message}");
-        Some(self.create_alert(message, AlertLevel::Critical))
+        Ok(())
+    }
+
+    async fn check_service(service: &mut MonitoredServiceState) -> Result<()> {
+
+        // Do the actual service status checking here.
+        debug!("Checking service {} state...", &service.name);
+        match Self::is_service_active(&service.name).await {
+            Ok(true) => {
+
+                // The service is now online.
+                debug!("Service {} is online!", &service.name);
+                if service.is_offline {
+                    service.is_offline = false;
+                    service.retry_count = 0;
+
+                    Self::send_alert(format!("{} is now ONLINE!", service.name), service.level.clone()).await?;
+                }
+            },
+            Ok(false) => Self::handle_offline_service(service).await?,
+            Err(e) => error!("Failed to check service status {}: {}", service.name, e)
+        }
+        Ok(())
     }
 }
 
 #[async_trait]
 impl Monitor for ServicesMonitor {
 
-    fn name(&self) -> &'static str { "ServicesMonitor" }
-    fn interval(&self) -> Duration { Duration::from_secs(10) }
+    #[inline]
+    fn name() -> &'static str { "ServicesMonitor" }
 
-    async fn run(&mut self) -> Result<Option<AlertInfo>> {
+    fn from_config(config: &EnvConfig) -> Option<Self> {
+        let services: Vec<MonitoredServiceState> = MONITORED_SERVICES
+            .into_iter()
+            .map(|(service_name, service_level)| {
+                MonitoredServiceState {
+                    name: service_name.to_string(),
+                    level: service_level,
+                    is_offline: false,
+                    retry_count: 0
+                }
+            })
+            .collect();
 
-        let mut currently_offline = Vec::<String>::with_capacity(MONITORED_SERVICES.len());
-        for service in MONITORED_SERVICES {
-            if !Self::is_service_active(service).await? {
-                currently_offline.push(service.to_string());
-            }
+        // Only enable if there are services to monitor.
+        if services.is_empty() {
+            warn!("There are no services defined to monitor!");
+            None
+        } else {
+            Some(Self { services, interval: config.services_poll_interval })
         }
+    }
 
-        let now_offline: Vec<String> = currently_offline
-            .iter()
-            .filter(|service| !self.offline_services.contains(*service))
-            .map(|service| format!("{service} now OFFLINE"))
-            .collect();
+    async fn run(&mut self) -> Result<()> {
+        let mut interval = interval(Duration::from_secs(self.interval));
 
-        let now_online: Vec<String> = self.offline_services
-            .iter()
-            .filter(|service| !currently_offline.contains(service))
-            .map(|service| format!("{service} ONLINE"))
-            .collect();
-
-        self.offline_services = currently_offline;
-        Ok(self.create_services_alert(&now_offline, &now_online))
+        debug!("Started with an interval of {} seconds!", self.interval);
+        loop {
+            for service in &mut self.services {
+                Self::check_service(service).await?;
+            }
+            interval.tick().await;
+        }
     }
 }
