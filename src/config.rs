@@ -14,7 +14,8 @@ pub struct EnvConfig {
     pub sentry_cron_interval: u64,
 
     /// How often should systemd services be checked? (Used in ServicesMonitor).
-    pub services_poll_interval: u64
+    pub services_poll_interval: u64,
+    pub pushover_test: Option<String>
 }
 
 fn get_env<T: FromStr>(key: &str) -> Option<T>
@@ -39,5 +40,6 @@ pub fn from_env() -> Result<EnvConfig> {
         sentry_cron_url: get_env("SECURITY_SENTRY_CRON_URL"),
         sentry_cron_interval: get_env_default("SECURITY_SENTRY_CRON_INTERVAL", 180)?,
         services_poll_interval: get_env_default("SECURITY_SERVICES_POLL_INTERVAL", 60)?,
+        pushover_test: get_env("PUSHOVER_TEST")
     })
 }

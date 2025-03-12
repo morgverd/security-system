@@ -15,7 +15,7 @@ use crate::monitors::services::ServicesMonitor;
 #[async_trait]
 pub(crate) trait Monitor: Send + Sync + 'static {
 
-    /// Returns the static monitor name.
+    /// Returns the static monitor name for logging.
     fn name() -> &'static str;
 
     /// Creates a new monitor instance with given configuration.
@@ -50,7 +50,7 @@ async fn run_monitor<T: Monitor>(mut monitor: T) {
     }
 }
 
-fn spawn_if_enabled<T: Monitor>(config: &EnvConfig) -> Option<JoinHandle<()>> {
+fn try_from_config<T: Monitor>(config: &EnvConfig) -> Option<JoinHandle<()>> {
     match T::from_config(config) {
         Some(monitor) => Some(tokio::spawn(run_monitor(monitor))),
         None => {
@@ -64,11 +64,10 @@ pub(crate) async fn spawn_monitors(config: &EnvConfig) -> Vec<JoinHandle<()>> {
     info!("Spawning monitors");
 
     vec![
-        spawn_if_enabled::<SentryCronMonitor>(config),
-        spawn_if_enabled::<ServicesMonitor>(config)
+        try_from_config::<SentryCronMonitor>(config),
+        try_from_config::<ServicesMonitor>(config)
     ]
     .into_iter()
     .flatten()
     .collect()
 }
-

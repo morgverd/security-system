@@ -3,6 +3,7 @@ use anyhow::{Context, Result};
 use dotenv::dotenv;
 use futures::future::select_all;
 use log::{debug, error, info, warn};
+use crate::alerts::initialize_alert_manager;
 use crate::config::from_env;
 use crate::monitors::spawn_monitors;
 use crate::webhooks::get_routes;
@@ -11,6 +12,7 @@ mod webhooks;
 mod monitors;
 mod alerts;
 mod config;
+mod communications;
 
 fn main() -> Result<()> {
 
@@ -60,6 +62,10 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?
         .block_on(async {
+
+            // Initialize CommunicationsRegistry and AlertManager.
+            initialize_alert_manager(&config).await
+                .expect("Failed to initialize AlertManager!");
 
             // Create monitors and HTTP handles.
             let monitor_handles = spawn_monitors(&config).await;
