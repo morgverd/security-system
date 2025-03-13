@@ -20,7 +20,7 @@ pub(crate) struct SentryCronMonitor {
 
 #[async_trait]
 impl Monitor for SentryCronMonitor {
-    fn name() -> &'static str { "SentryCronMonitor" }
+    fn name() -> &'static str { "sentry" }
 
     fn from_config(config: &EnvConfig) -> Option<Self> {
         if let Some(url) = &config.sentry_cron_url {

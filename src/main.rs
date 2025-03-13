@@ -2,7 +2,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use dotenv::dotenv;
 use futures::future::select_all;
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
+use tokio::signal::ctrl_c;
+use tokio::sync::oneshot;
 use crate::alerts::initialize_alert_manager;
 use crate::config::from_env;
 use crate::monitors::spawn_monitors;
@@ -63,47 +65,54 @@ fn main() -> Result<()> {
         .build()?
         .block_on(async {
 
-            // Initialize CommunicationsRegistry and AlertManager.
-            initialize_alert_manager(&config).await
-                .expect("Failed to initialize AlertManager!");
+            // Create alarm manager task with shutdown signals.
+            let (alarm_shutdown_tx, alarm_shutdown_rx) = oneshot::channel::<()>();
+            let manager = initialize_alert_manager(&config).await.expect("Failed to initialize AlertManager!");
+            let manager_handle = tokio::spawn(async move {
+                tokio::select! {
+                    _ = manager.run() => warn!("AlertManager stopped unexpectedly."),
+                   _ = alarm_shutdown_rx => {}
+                }
+            });
 
-            // Create monitors and HTTP handles.
+            // Create Warp HTTP server task with shutdown signals.
+            let (warp_shutdown_tx, warp_shutdown_rx) = oneshot::channel::<()>();
+            let warp_handle = tokio::spawn(async move {
+                let (addr, server) = warp::serve(get_routes())
+                    .bind_with_graceful_shutdown(
+                        config.server_addr,
+                        async move { let _ = warp_shutdown_rx.await; }
+                    );
+
+                info!("HTTP server listening on {}", addr);
+                server.await;
+            });
+
+            // If there are monitors, create and join them.
+            let ctrl_c = ctrl_c();
             let monitor_handles = spawn_monitors(&config).await;
-            let mut server_handle_opt = Some(tokio::spawn(async move {
-                warp::serve(get_routes())
-                    .run(config.server_addr)
-                    .await;
-            }));
-
-            // If there are no monitors, just wait for the web server.
-            if monitor_handles.is_empty() {
-
-                debug!("Waiting only for server handle as there are no active monitors.");
-                if let Some(server_handle) = server_handle_opt.take() {
-                    server_handle.await.expect("Server handle panicked!");
+            if !monitor_handles.is_empty() {
+                debug!("Joining with {} monitor handle(s)!", monitor_handles.len());
+                tokio::select! {
+                    _ = select_all(monitor_handles) => warn!("A monitor has stopped unexpectedly!"),
+                    _ = ctrl_c => warn!("Received shutdown signal!")
                 }
             } else {
-
-                // Wait for either the webserver or any monitor to complete.
-                debug!("Waiting for web server and {} active monitors.", monitor_handles.len());
-                tokio::select! {
-                    _ = &mut server_handle_opt.as_mut().unwrap() => error!("The web server has stopped!"),
-                    res = select_all(monitor_handles) => {
-                        let (result, index, remaining) = res;
-                        error!("Monitor at index {index} {}!", if let Err(e) = result { format!("failed: {e}") } else { "completed unexpectedly".to_string() });
-
-                        // Abort all remaining tasks.
-                        for handle in remaining {
-                            handle.abort();
-                        }
-                        if let Some(server_handle) = server_handle_opt.take() {
-                            server_handle.abort();
-                        }
-                    }
-                }
+                debug!("There are no monitor handles!");
+                let _ = ctrl_c.await;
+                warn!("Received shutdown signal!");
             }
+
+            // Send shutdown signals.
+            info!("Shutting down services...");
+            let _ = alarm_shutdown_tx.send(());
+            let _ = warp_shutdown_tx.send(());
+
+            // Wait for tasks to terminate gracefully.
+            let _ = manager_handle.await;
+            let _ = warp_handle.await;
         });
 
-    info!("Shutting down...");
+    info!("Finished!");
     Ok(())
 }

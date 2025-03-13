@@ -116,7 +116,7 @@ impl ServicesMonitor {
 impl Monitor for ServicesMonitor {
 
     #[inline]
-    fn name() -> &'static str { "ServicesMonitor" }
+    fn name() -> &'static str { "services" }
 
     fn from_config(config: &EnvConfig) -> Option<Self> {
         let services: Vec<MonitoredServiceState> = MONITORED_SERVICES
