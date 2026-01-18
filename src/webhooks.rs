@@ -1,11 +1,14 @@
-use std::convert::Infallible;
-use log::{info, error};
-use warp::{Filter, Rejection, Reply};
+use crate::alerts::{send_alert, AlertInfo, AlertLevel};
+use log::{error, info};
 use serde::Deserialize;
+use std::convert::Infallible;
 use warp::body::BodyDeserializeError;
 use warp::http::StatusCode;
-use warp::reject::{InvalidQuery, LengthRequired, MethodNotAllowed, MissingHeader, PayloadTooLarge, UnsupportedMediaType};
-use crate::alerts::{AlertInfo, AlertLevel, send_alert};
+use warp::reject::{
+    InvalidQuery, LengthRequired, MethodNotAllowed, MissingHeader, PayloadTooLarge,
+    UnsupportedMediaType,
+};
+use warp::{Filter, Rejection, Reply};
 
 #[derive(Debug)]
 struct AuthError;
@@ -15,7 +18,7 @@ impl warp::reject::Reject for AuthError {}
 #[serde(rename_all = "PascalCase")]
 struct AlarmEvent {
     input1: Option<String>,
-    extra_text: String
+    extra_text: String,
 }
 
 async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, Rejection> {
@@ -24,8 +27,12 @@ async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, R
     let alert = AlertInfo {
         source: "CCTV".to_string(),
         message: payload.extra_text,
-        level: if payload.input1 == Some("test".to_string()) { AlertLevel::Alarm } else { AlertLevel::Critical },
-        timestamp: None
+        level: if payload.input1 == Some("test".to_string()) {
+            AlertLevel::Alarm
+        } else {
+            AlertLevel::Critical
+        },
+        timestamp: None,
     };
     let _ = send_alert(alert).await;
 
@@ -51,7 +58,10 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
     } else if err.find::<UnsupportedMediaType>().is_some() {
         (StatusCode::UNSUPPORTED_MEDIA_TYPE, "Unsupported media type")
     } else if err.find::<LengthRequired>().is_some() {
-        (StatusCode::LENGTH_REQUIRED, "Content-Length header is required")
+        (
+            StatusCode::LENGTH_REQUIRED,
+            "Content-Length header is required",
+        )
     } else if err.find::<BodyDeserializeError>().is_some() {
         (StatusCode::BAD_REQUEST, "Invalid request body")
     } else {
@@ -67,18 +77,17 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
 }
 
 pub(crate) fn get_routes() -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
-    let auth_header = warp::header::<String>("Authorization")
-        .and_then(|v: String| async move {
-            if v == "hello" {
-                Ok(())
-            } else {
-                Err(warp::reject::custom(AuthError))
-            }
-        });
+    let auth_header = warp::header::<String>("Authorization").and_then(|v: String| async move {
+        if v == "hello" {
+            Ok(())
+        } else {
+            Err(warp::reject::custom(AuthError))
+        }
+    });
 
     warp::post()
         .and(warp::path("cctv"))
-        .and(auth_header.clone())
+        .and(auth_header)
         .and(warp::body::json())
         .and_then(handle_cctv_webhook)
         .recover(handle_rejection)

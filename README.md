@@ -10,7 +10,6 @@ It also runs a HTTP server to accept webhooks from the CCTV SMTP and Alarm Modem
 The system receives webhook events on either `/cctv` or `/alarm` and will then send out an alert.
 
 - CCTV: https://github.com/morgverd/cctv-smtp-alerts
-- Alarm: https://github.com/morgverd/alarm-modem
 
 ### Monitors
 
@@ -23,6 +22,4 @@ The system can also send alerts if a monitor fails, this is used to verify that 
 
 ### Alerts
 
-The system uses Pushover to send notifications to a group.
-
-**Goal**: Use a SIM card to send text messages if there is no internet connection (eg: building lost power).
+Alerts are sent as SMS messages using [sms-server](https://github.com/morgverd/sms-server) via [sms-client](https://github.com/morgverd/sms-client).

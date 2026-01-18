@@ -1,15 +1,15 @@
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::{Instant, Duration, sleep};
+use crate::config::AppConfig;
 use anyhow::{anyhow, Result};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
-use sms_client::Client;
 use sms_client::http::HttpClient;
 use sms_client::types::sms::SmsOutgoingMessage;
+use sms_client::Client;
+use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, OnceCell, RwLock, Semaphore};
-use crate::config::AppConfig;
+use tokio::time::{sleep, Duration, Instant};
 
 /// (MinAlertLevel, PhoneNumber)
 pub type AlertRecipient = (u8, String);
@@ -19,7 +19,7 @@ pub(crate) enum AlertLevel {
     Info,
     Warning,
     Critical,
-    Alarm
+    Alarm,
 }
 impl AlertLevel {
     pub fn as_u8(&self) -> u8 {
@@ -27,7 +27,7 @@ impl AlertLevel {
             AlertLevel::Info => 1,
             AlertLevel::Warning => 2,
             AlertLevel::Critical => 3,
-            AlertLevel::Alarm => 4
+            AlertLevel::Alarm => 4,
         }
     }
 }
@@ -37,12 +37,17 @@ pub(crate) struct AlertInfo {
     pub source: String,
     pub message: String,
     pub level: AlertLevel,
-    pub timestamp: Option<u64>
+    pub timestamp: Option<u64>,
 }
 impl AlertInfo {
     pub fn new(source: String, message: String, level: AlertLevel) -> Result<Self> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;
-        Ok(Self { source, message, level, timestamp: Some(timestamp.as_secs()) })
+        Ok(Self {
+            source,
+            message,
+            level,
+            timestamp: Some(timestamp.as_secs()),
+        })
     }
 
     #[inline]
@@ -58,11 +63,13 @@ impl Display for AlertInfo {
 
 #[derive(Clone)]
 pub(crate) struct AlertSender {
-    sender: mpsc::Sender<AlertInfo>
+    sender: mpsc::Sender<AlertInfo>,
 }
 impl AlertSender {
     pub async fn send(&self, alert: AlertInfo) -> Result<()> {
-        self.sender.send(alert).await
+        self.sender
+            .send(alert)
+            .await
             .map_err(|_| anyhow!("Failed to queue alert; channel may be closed."))
     }
 }
@@ -74,7 +81,6 @@ struct AlertWorker {
     pub sms_http_client: Arc<HttpClient>,
     pub sms_recipients: Arc<Vec<AlertRecipient>>,
 }
-
 impl AlertWorker {
     pub async fn handle(&self, alert: &AlertInfo) -> Result<()> {
         let mut pending_indices = self.recipients_for_level(alert.level.as_u8());
@@ -86,7 +92,8 @@ impl AlertWorker {
 
         let mut attempts = 0;
         loop {
-            let (failed_indices, last_error) = self.send_to_recipients(&pending_indices, alert).await;
+            let (failed_indices, last_error) =
+                self.send_to_recipients(&pending_indices, alert).await;
             if failed_indices.is_empty() {
                 return Ok(());
             }
@@ -98,13 +105,16 @@ impl AlertWorker {
                     failed_indices.len(),
                     self.retry_max,
                     last_error
-                ))
+                ));
             }
 
             let delay = self.calculate_backoff(attempts);
             debug!(
                 "Failed to send to {} recipient(s) (attempt {}/{}), retrying in {:?}",
-                failed_indices.len(), attempts, self.retry_max, delay
+                failed_indices.len(),
+                attempts,
+                self.retry_max,
+                delay
             );
             sleep(delay).await;
 
@@ -150,7 +160,9 @@ impl AlertWorker {
 
     #[inline]
     fn calculate_backoff(&self, attempt: u64) -> Duration {
-        let backoff = self.retry_base_delay.saturating_mul(1 << (attempt - 1).min(6));
+        let backoff = self
+            .retry_base_delay
+            .saturating_mul(1 << (attempt - 1).min(6));
         backoff.min(self.retry_max_delay)
     }
 }
@@ -167,7 +179,7 @@ pub(crate) struct AlertManager {
     sms_recipients: Arc<Vec<AlertRecipient>>,
 
     semaphore: Arc<Semaphore>,
-    receiver: mpsc::Receiver<AlertInfo>
+    receiver: mpsc::Receiver<AlertInfo>,
 }
 impl AlertManager {
     pub fn new(config: &AppConfig, sms_client: Client) -> (Self, AlertSender) {
@@ -185,9 +197,9 @@ impl AlertManager {
                 sms_recipients: Arc::new(config.get_sms_recipients()),
 
                 semaphore: Arc::new(Semaphore::new(config.alerts_concurrency_limit)),
-                receiver
+                receiver,
             },
-            AlertSender { sender }
+            AlertSender { sender },
         )
     }
 
@@ -197,7 +209,9 @@ impl AlertManager {
             self.execute(alert).await;
         }
 
-        Err(anyhow!("Alert channel closed, no more alerts can be processed!"))
+        Err(anyhow!(
+            "Alert channel closed, no more alerts can be processed!"
+        ))
     }
 
     async fn execute(&self, alert: AlertInfo) {
@@ -227,7 +241,7 @@ impl AlertManager {
             let _permit = permit;
             match worker.handle(&alert).await {
                 Ok(()) => debug!("Successfully processed alert!"),
-                Err(e) => error!("Failed to process alert: {:#?}", e)
+                Err(e) => error!("Failed to process alert: {:#?}", e),
             }
         });
     }
@@ -238,7 +252,7 @@ impl AlertManager {
             retry_max_delay: self.retry_max_delay,
             retry_max: self.retry_max,
             sms_http_client: Arc::clone(&self.sms_http_client),
-            sms_recipients: Arc::clone(&self.sms_recipients)
+            sms_recipients: Arc::clone(&self.sms_recipients),
         }
     }
 }
@@ -249,14 +263,16 @@ pub async fn initialize_alert_manager(config: &AppConfig) -> Result<AlertManager
     let sms_client = Client::new(config.get_sms_config())?;
     let (manager, sender) = AlertManager::new(config, sms_client);
 
-    ALERT_SENDER.set(sender)
+    ALERT_SENDER
+        .set(sender)
         .map_err(|_| anyhow!("AlertSender already initialized!"))?;
 
     Ok(manager)
 }
 
 pub async fn send_alert(alert: AlertInfo) -> Result<()> {
-    ALERT_SENDER.get()
+    ALERT_SENDER
+        .get()
         .ok_or_else(|| anyhow!("AlertSender is not initialized!"))?
         .send(alert)
         .await
