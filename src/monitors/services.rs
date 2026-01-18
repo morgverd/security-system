@@ -1,5 +1,5 @@
 use crate::alerts::AlertLevel;
-use crate::config::AppConfig;
+use crate::config::MonitorsConfig;
 use crate::monitors::Monitor;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -124,7 +124,7 @@ impl Monitor for ServicesMonitor {
         "services"
     }
 
-    fn from_config(config: &AppConfig) -> Option<Self> {
+    fn from_config(config: &MonitorsConfig) -> Option<Self> {
         let services: Vec<MonitoredServiceState> = MONITORED_SERVICES
             .into_iter()
             .map(|(service_name, service_level)| MonitoredServiceState {

@@ -17,13 +17,14 @@ mod webhooks;
 
 fn main() -> Result<()> {
     dotenv().ok();
-    let config = AppConfig::from_env()?;
+
+    // TODO: Make into clap cli argument.
+    let config = AppConfig::load(Some("config.toml".into()))?;
 
     let mut log_builder = env_logger::Builder::new();
-    log_builder.filter_level(config.log_level);
     log_builder.parse_env(env_logger::Env::default());
 
-    let _guard = if let Some(ref sentry_dsn) = config.sentry_dsn {
+    let _guard = if let Some(ref sentry_dsn) = config.sentry.sentry_dsn {
         info!("Initializing Sentry...");
 
         // Ensure Sentry can capture error logs.
@@ -89,19 +90,19 @@ fn main() -> Result<()> {
             let (warp_shutdown_tx, warp_shutdown_rx) = oneshot::channel::<()>();
             let warp_handle = tokio::spawn(async move {
                 let (addr, server) = warp::serve(get_routes()).bind_with_graceful_shutdown(
-                    config.http_addr,
+                    config.server.http_addr,
                     async move {
                         let _ = warp_shutdown_rx.await;
                     },
                 );
 
-                info!("HTTP server listening on {}", addr);
+                info!("HTTP server listening on {addr}");
                 server.await;
             });
 
             // If there are monitors, create and join them.
             let ctrl_c = ctrl_c();
-            let monitor_handles = spawn_monitors(&config).await;
+            let monitor_handles = spawn_monitors(&config.monitors).await;
             if !monitor_handles.is_empty() {
                 debug!("Joining with {} monitor handle(s)!", monitor_handles.len());
                 tokio::select! {

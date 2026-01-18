@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::MonitorsConfig;
 use crate::monitors::Monitor;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,25 +13,23 @@ use tokio::time::sleep;
    This is used as remote health-checks for the system.
 */
 
-pub(crate) struct SentryCronMonitor {
+pub(crate) struct CronMonitor {
     url: String,
     interval: u64,
 }
 
 #[async_trait]
-impl Monitor for SentryCronMonitor {
+impl Monitor for CronMonitor {
     fn name() -> &'static str {
-        "sentry"
+        "cron"
     }
 
-    fn from_config(config: &AppConfig) -> Option<Self> {
-        config
-            .sentry_cron_url
-            .as_ref()
-            .map(|url| SentryCronMonitor {
-                url: url.clone(),
-                interval: config.sentry_cron_interval,
-            })
+    fn from_config(config: &MonitorsConfig) -> Option<Self> {
+        let cron_url = config.cron_url.as_ref()?;
+        Some(CronMonitor {
+            url: cron_url.clone(),
+            interval: config.cron_interval,
+        })
     }
 
     async fn run(&mut self) -> Result<()> {

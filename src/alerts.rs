@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, SMSRecipient};
 use anyhow::{anyhow, Result};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
@@ -10,9 +10,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, OnceCell, RwLock, Semaphore};
 use tokio::time::{sleep, Duration, Instant};
-
-/// (MinAlertLevel, PhoneNumber)
-pub type AlertRecipient = (u8, String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) enum AlertLevel {
@@ -79,12 +76,11 @@ struct AlertWorker {
     pub retry_base_delay: Duration,
     pub retry_max_delay: Duration,
     pub sms_http_client: Arc<HttpClient>,
-    pub sms_recipients: Arc<Vec<AlertRecipient>>,
+    pub sms_recipients: Arc<Vec<SMSRecipient>>,
 }
 impl AlertWorker {
     pub async fn handle(&self, alert: &AlertInfo) -> Result<()> {
         let mut pending_indices = self.recipients_for_level(alert.level.as_u8());
-
         if pending_indices.is_empty() {
             debug!("No recipients configured for alert level {:?}", alert.level);
             return Ok(());
@@ -126,7 +122,7 @@ impl AlertWorker {
         self.sms_recipients
             .iter()
             .enumerate()
-            .filter(|(_, (min_level, _))| *min_level <= alert_level)
+            .filter(|(_, recipient)| recipient.level <= alert_level)
             .map(|(i, _)| i)
             .collect()
     }
@@ -140,15 +136,18 @@ impl AlertWorker {
         let mut last_error = None;
 
         for &i in indices {
-            let (_, recipient) = &self.sms_recipients[i];
-            let message = SmsOutgoingMessage::simple_message(recipient, alert.to_string());
+            let recipient = &self.sms_recipients[i];
+            let message = SmsOutgoingMessage::simple_message(&recipient.phone, alert.to_string());
 
             match self.sms_http_client.send_sms(&message).await {
                 Ok(response) => {
-                    debug!("Sent message ID #{} to: {}", response.message_id, recipient);
+                    debug!(
+                        "Sent message ID #{} to: {}",
+                        response.message_id, recipient.phone
+                    );
                 }
                 Err(e) => {
-                    warn!("Failed to send alert to {}: {:#?}", recipient, e);
+                    warn!("Failed to send alert to {}: {:#?}", recipient.phone, e);
                     last_error = Some(e.into());
                     failed_indices.push(i);
                 }
@@ -176,7 +175,7 @@ pub(crate) struct AlertManager {
     retry_max: u64,
 
     sms_http_client: Arc<HttpClient>,
-    sms_recipients: Arc<Vec<AlertRecipient>>,
+    sms_recipients: Arc<Vec<SMSRecipient>>,
 
     semaphore: Arc<Semaphore>,
     receiver: mpsc::Receiver<AlertInfo>,
@@ -186,17 +185,17 @@ impl AlertManager {
         let (sender, receiver) = mpsc::channel::<AlertInfo>(100);
         (
             Self {
-                alarm_cooldown: Duration::from_secs(config.alarm_cooldown),
+                alarm_cooldown: Duration::from_secs(config.alerts.alarm_cooldown),
                 alarm_last: Arc::new(RwLock::new(None)),
 
-                retry_base_delay: Duration::from_secs(config.alerts_retry_base_delay),
-                retry_max_delay: Duration::from_secs(config.alerts_retry_max_delay),
-                retry_max: config.alerts_retry_max,
+                retry_base_delay: Duration::from_secs(config.alerts.send_retry_base_delay),
+                retry_max_delay: Duration::from_secs(config.alerts.send_retry_max_delay),
+                retry_max: config.alerts.send_retry_max,
 
                 sms_http_client: sms_client.http_arc().expect("Missing SMS HttpClient!"),
-                sms_recipients: Arc::new(config.get_sms_recipients()),
+                sms_recipients: Arc::new(config.sms.recipients.clone()),
 
-                semaphore: Arc::new(Semaphore::new(config.alerts_concurrency_limit)),
+                semaphore: Arc::new(Semaphore::new(config.alerts.send_concurrency_limit)),
                 receiver,
             },
             AlertSender { sender },
@@ -215,6 +214,8 @@ impl AlertManager {
     }
 
     async fn execute(&self, alert: AlertInfo) {
+        debug!("Executing alert: {alert:?}");
+
         let is_alarm = alert.is_alarm();
         if is_alarm {
             let mut alarm_last_guard = self.alarm_last.write().await;
@@ -222,7 +223,7 @@ impl AlertManager {
 
             if let Some(last) = *alarm_last_guard {
                 if now.duration_since(last) < self.alarm_cooldown {
-                    warn!("Alarm suppressed during cooldown: {}", alert);
+                    warn!("Alarm suppressed during cooldown: {alert}");
                     return;
                 }
             }
@@ -241,7 +242,7 @@ impl AlertManager {
             let _permit = permit;
             match worker.handle(&alert).await {
                 Ok(()) => debug!("Successfully processed alert!"),
-                Err(e) => error!("Failed to process alert: {:#?}", e),
+                Err(e) => error!("Failed to process alert: {e:#?}"),
             }
         });
     }
@@ -260,7 +261,7 @@ impl AlertManager {
 static ALERT_SENDER: OnceCell<AlertSender> = OnceCell::const_new();
 
 pub async fn initialize_alert_manager(config: &AppConfig) -> Result<AlertManager> {
-    let sms_client = Client::new(config.get_sms_config())?;
+    let sms_client = Client::new(config.sms.get_sms_config())?;
     let (manager, sender) = AlertManager::new(config, sms_client);
 
     ALERT_SENDER

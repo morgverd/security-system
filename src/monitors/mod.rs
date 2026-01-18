@@ -1,15 +1,15 @@
 mod cctv;
+mod cron;
 mod internet;
 mod ping;
 mod power;
-mod sentry;
 mod services;
 
 use crate::alerts::{send_alert, AlertInfo, AlertLevel};
-use crate::config::AppConfig;
+use crate::config::MonitorsConfig;
 use crate::monitors::cctv::CCTVMonitor;
+use crate::monitors::cron::CronMonitor;
 use crate::monitors::internet::InternetMonitor;
-use crate::monitors::sentry::SentryCronMonitor;
 use crate::monitors::services::ServicesMonitor;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -25,7 +25,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Creates a new monitor instance with given configuration.
     /// Implementations can override this for custom initialization.
     /// If None is returned, the monitor is not run.
-    fn from_config(config: &AppConfig) -> Option<Self>
+    fn from_config(config: &MonitorsConfig) -> Option<Self>
     where
         Self: Sized;
 
@@ -36,7 +36,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Helper method to send alerts with the monitors name as the source.
     async fn send_alert(message: String, level: AlertLevel) -> Result<()> {
         let name = Self::name().to_string();
-        let alert = AlertInfo::new(format!("{}-monitor", name), message, level)?;
+        let alert = AlertInfo::new(format!("{name}-monitor"), message, level)?;
         send_alert(alert).await
     }
 }
@@ -52,13 +52,13 @@ async fn run_monitor<T: Monitor>(mut monitor: T) {
 }
 
 fn try_from_config<T: Monitor>(
-    config: &AppConfig,
+    config: &MonitorsConfig,
     disabled_monitors: Option<&HashSet<String>>,
 ) -> Option<JoinHandle<()>> {
     let name = T::name();
     if let Some(disabled_monitors) = disabled_monitors {
         if disabled_monitors.contains(name) {
-            warn!("The {} monitor is disabled by config!", name);
+            warn!("The {name} monitor is disabled by config!");
             return None;
         }
     }
@@ -67,20 +67,19 @@ fn try_from_config<T: Monitor>(
         Some(monitor) => Some(tokio::spawn(run_monitor(monitor))),
         None => {
             warn!(
-                "The {} monitor is disabled or has invalid configuration!",
-                name
+                "The {name} monitor is disabled or has invalid configuration!"
             );
             None
         }
     }
 }
 
-pub(crate) async fn spawn_monitors(config: &AppConfig) -> Vec<JoinHandle<()>> {
-    let disabled_monitors = config.disabled_monitors.as_ref();
+pub(crate) async fn spawn_monitors(config: &MonitorsConfig) -> Vec<JoinHandle<()>> {
+    let disabled_monitors = config.disabled.as_ref();
     vec![
         try_from_config::<CCTVMonitor>(config, disabled_monitors),
         try_from_config::<InternetMonitor>(config, disabled_monitors),
-        try_from_config::<SentryCronMonitor>(config, disabled_monitors),
+        try_from_config::<CronMonitor>(config, disabled_monitors),
         try_from_config::<ServicesMonitor>(config, disabled_monitors),
     ]
     .into_iter()

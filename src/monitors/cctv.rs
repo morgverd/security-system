@@ -1,4 +1,5 @@
-use crate::config::AppConfig;
+use crate::alerts::AlertLevel;
+use crate::config::MonitorsConfig;
 use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
 use async_trait::async_trait;
@@ -17,17 +18,20 @@ impl Monitor for CCTVMonitor {
         "cctv"
     }
 
-    fn from_config(config: &AppConfig) -> Option<Self> {
+    fn from_config(config: &MonitorsConfig) -> Option<Self> {
         Some(Self(PingMonitor::new(
             "cctv",
             config.cctv_local_ip.clone()?,
-            "The CCTV NVR is now online",
+            "The CCTV NVR is now online.",
             "The CCTV NVR is not responding to pings.",
             config,
         )))
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
-        self.0.run().await
+        loop {
+            let event = self.0.run().await;
+            Self::send_alert(event.message, AlertLevel::Critical).await?;
+        }
     }
 }

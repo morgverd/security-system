@@ -12,11 +12,12 @@ serde_json = "1.0.132"
 tokio = { version = "1.41.1", features = ["full"] }
 warp = "0.3.7"
 serde = { version = "1.0.214", features = ["derive"] }
-sentry = "0.36.0"
-sentry-log = "0.36.0"
+sentry = "0.46.1"
+sentry-log = "0.46.1"
 futures = "0.3.31"
-reqwest = "0.12.12"
-sentry-panic = "0.36.0"
-sentry-anyhow = "0.36.0"
+reqwest = { version = "0.12.28", features = ["rustls-tls"] }
+sentry-panic = "0.46.1"
+sentry-anyhow = "0.46.1"
 dotenv = "0.15.0"
-sms-client = "2.0.0"
+sms-client = { version = "2.0.0", features = ["http-tls-rustls"] }
+toml = "0.9.11"

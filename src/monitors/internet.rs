@@ -1,9 +1,9 @@
-use crate::config::AppConfig;
+use crate::alerts::AlertLevel;
+use crate::config::MonitorsConfig;
 use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
 use anyhow::Result;
 use async_trait::async_trait;
-
 /*
    Check that the building still has an internet connection.
    Alerts are sent by SMS now, so this is just for general building monitoring.
@@ -17,7 +17,7 @@ impl Monitor for InternetMonitor {
         "internet"
     }
 
-    fn from_config(config: &AppConfig) -> Option<Self> {
+    fn from_config(config: &MonitorsConfig) -> Option<Self> {
         Some(Self(PingMonitor::new(
             "internet",
             "google.com:80".to_string(),
@@ -28,6 +28,9 @@ impl Monitor for InternetMonitor {
     }
 
     async fn run(&mut self) -> Result<()> {
-        self.0.run().await
+        loop {
+            let event = self.0.run().await;
+            Self::send_alert(event.message, AlertLevel::Info).await?;
+        }
     }
 }

@@ -22,7 +22,7 @@ struct AlarmEvent {
 }
 
 async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, Rejection> {
-    info!("Received CCTV webhook: {:?}", payload);
+    info!("Received CCTV webhook: {payload:?}");
 
     let alert = AlertInfo {
         source: "cctv-webhook".to_string(),
@@ -65,7 +65,7 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
     } else if err.find::<BodyDeserializeError>().is_some() {
         (StatusCode::BAD_REQUEST, "Invalid request body")
     } else {
-        error!("Unhandled rejection: {:?}", err);
+        error!("Unhandled rejection: {err:?}");
         (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
     };
 

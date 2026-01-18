@@ -1,6 +1,4 @@
-use crate::alerts::AlertLevel;
-use crate::config::AppConfig;
-use anyhow::Result;
+use crate::config::MonitorsConfig;
 use log::{debug, info, warn};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -8,8 +6,12 @@ use tokio::time::{sleep, timeout};
 
 /*
    Used in InternetMonitor and CCTVMonitor.
-   Attempts to create a TCP connection with ping_addr, sending alerts for disconnect/reconnect.
+   Attempts to create a TCP connection with ping_addr, returning a PingEvent for Online/Offline.
 */
+
+pub struct PingEvent {
+    pub message: String,
+}
 
 pub struct PingMonitor {
     name: &'static str,
@@ -26,7 +28,7 @@ impl PingMonitor {
         ping_addr: String,
         reconnected_message: &'static str,
         disconnected_message: &'static str,
-        config: &AppConfig,
+        config: &MonitorsConfig,
     ) -> Self {
         Self {
             name,
@@ -39,7 +41,8 @@ impl PingMonitor {
         }
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    /// Polls until a status change occurs, then returns an event with the alert message.
+    pub async fn run(&mut self) -> PingEvent {
         loop {
             let online =
                 match timeout(self.timeout_duration, TcpStream::connect(&self.ping_addr)).await {
@@ -61,25 +64,21 @@ impl PingMonitor {
                 if online { "Online" } else { "Offline" }
             );
 
-            if online {
-                if !self.online {
+            if online != self.online {
+                self.online = online;
+                let message = if online {
                     info!("{}: Now online!", self.name);
-                    self.online = true;
-                    self.send_alert(self.reconnected_message.to_owned(), AlertLevel::Info)
-                        .await?;
-                }
-            } else if self.online {
-                info!("{}: Now offline!", self.name);
-                self.online = false;
-                self.send_alert(self.disconnected_message.to_owned(), AlertLevel::Info)
-                    .await?;
+                    self.reconnected_message
+                } else {
+                    info!("{}: Now offline!", self.name);
+                    self.disconnected_message
+                };
+                return PingEvent {
+                    message: message.to_owned(),
+                };
             }
 
             sleep(self.interval_duration).await;
         }
-    }
-
-    async fn send_alert(&self, _message: String, _level: AlertLevel) -> Result<()> {
-        unimplemented!("implement alert sending")
     }
 }
