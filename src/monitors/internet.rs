@@ -1,25 +1,15 @@
-use crate::alerts::AlertLevel;
 use crate::config::AppConfig;
+use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
 use anyhow::Result;
 use async_trait::async_trait;
-use log::{debug, info, warn};
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::time::{sleep, timeout};
 
 /*
    Check that the building still has an internet connection.
    Alerts are sent by SMS now, so this is just for general building monitoring.
 */
 
-const PING_ADDR: &str = "google.com:80";
-
-pub(crate) struct InternetMonitor {
-    online: bool,
-    interval_duration: Duration,
-    timeout_duration: Duration,
-}
+pub(crate) struct InternetMonitor(PingMonitor);
 
 #[async_trait]
 impl Monitor for InternetMonitor {
@@ -27,57 +17,17 @@ impl Monitor for InternetMonitor {
         "internet"
     }
 
-    fn from_config(config: &AppConfig) -> Option<Self>
-    where
-        Self: Sized,
-    {
-        Some(Self {
-            online: true,
-            interval_duration: Duration::from_secs(config.internet_poll_interval),
-            timeout_duration: Duration::from_secs(config.internet_poll_timeout),
-        })
+    fn from_config(config: &AppConfig) -> Option<Self> {
+        Some(Self(PingMonitor::new(
+            "internet",
+            "google.com:80".to_string(),
+            "The security system has reconnected to the internet.",
+            "The security system has lost its internet connection.",
+            config,
+        )))
     }
 
     async fn run(&mut self) -> Result<()> {
-        loop {
-            let online = match timeout(self.timeout_duration, TcpStream::connect(PING_ADDR)).await {
-                Ok(Ok(_)) => true,
-                Ok(Err(e)) => {
-                    warn!("Ping error: {}", e.to_string());
-                    false
-                }
-                Err(_) => {
-                    warn!("Ping timeout!");
-                    false
-                }
-            };
-
-            debug!(
-                "Internet status from ping: {}.",
-                if online { "Online" } else { "Offline" }
-            );
-            if online {
-                if !self.online {
-                    info!("Now online!");
-
-                    self.online = true;
-                    Self::send_alert(
-                        "Security system has reconnected to the internet.".to_owned(),
-                        AlertLevel::Info,
-                    )
-                    .await?;
-                }
-            } else if self.online {
-                info!("Now offline!");
-
-                self.online = false;
-                Self::send_alert(
-                    "The security system has lost it's internet connection.".to_owned(),
-                    AlertLevel::Info,
-                )
-                .await?;
-            }
-            sleep(self.interval_duration).await;
-        }
+        self.0.run().await
     }
 }

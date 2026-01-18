@@ -25,7 +25,7 @@ async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, R
     info!("Received CCTV webhook: {:?}", payload);
 
     let alert = AlertInfo {
-        source: "CCTV".to_string(),
+        source: "cctv-webhook".to_string(),
         message: payload.extra_text,
         level: if payload.input1 == Some("test".to_string()) {
             AlertLevel::Alarm

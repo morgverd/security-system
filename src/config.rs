@@ -44,8 +44,9 @@ pub(crate) struct AppConfig {
     // Monitors --------------------------------
     pub disabled_monitors: Option<HashSet<String>>,
     pub services_poll_interval: u64,
-    pub internet_poll_interval: u64,
-    pub internet_poll_timeout: u64,
+    pub ping_poll_interval: u64,
+    pub ping_poll_timeout: u64,
+    pub cctv_local_ip: Option<String>,
 
     // SMS Communication --------------------------
     pub sms_http_base: String,
@@ -77,8 +78,9 @@ impl AppConfig {
                     .collect::<HashSet<_>>()
             }),
             services_poll_interval: get_env_default("SECURITY_SERVICES_POLL_INTERVAL", 60)?,
-            internet_poll_interval: get_env_default("SECURITY_INTERNET_POLL_INTERVAL", 180)?,
-            internet_poll_timeout: get_env_default("SECURITY_INTERNET_POLL_TIMEOUT", 10)?,
+            ping_poll_interval: get_env_default("SECURITY_PING_POLL_INTERVAL", 180)?,
+            ping_poll_timeout: get_env_default("SECURITY_PING_POLL_TIMEOUT", 10)?,
+            cctv_local_ip: get_env("SECURITY_CCTV_LOCAL_IP"),
 
             sms_http_base: get_env("SECURITY_SMS_HTTP_BASE")
                 .expect("Missing required SECURITY_SMS_HTTP_BASE env var!"),

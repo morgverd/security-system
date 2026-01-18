@@ -1,11 +1,13 @@
 mod cctv;
 mod internet;
+mod ping;
 mod power;
 mod sentry;
 mod services;
 
 use crate::alerts::{send_alert, AlertInfo, AlertLevel};
 use crate::config::AppConfig;
+use crate::monitors::cctv::CCTVMonitor;
 use crate::monitors::internet::InternetMonitor;
 use crate::monitors::sentry::SentryCronMonitor;
 use crate::monitors::services::ServicesMonitor;
@@ -34,14 +36,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Helper method to send alerts with the monitors name as the source.
     async fn send_alert(message: String, level: AlertLevel) -> Result<()> {
         let name = Self::name().to_string();
-        let alert = AlertInfo::new(
-            format!(
-                "{} Monitor",
-                name.get(0..1).map(|s| s.to_uppercase()).unwrap_or_default() + &name[1..]
-            ),
-            message,
-            level,
-        )?;
+        let alert = AlertInfo::new(format!("{}-monitor", name), message, level)?;
         send_alert(alert).await
     }
 }
@@ -83,8 +78,9 @@ fn try_from_config<T: Monitor>(
 pub(crate) async fn spawn_monitors(config: &AppConfig) -> Vec<JoinHandle<()>> {
     let disabled_monitors = config.disabled_monitors.as_ref();
     vec![
-        try_from_config::<SentryCronMonitor>(config, disabled_monitors),
+        try_from_config::<CCTVMonitor>(config, disabled_monitors),
         try_from_config::<InternetMonitor>(config, disabled_monitors),
+        try_from_config::<SentryCronMonitor>(config, disabled_monitors),
         try_from_config::<ServicesMonitor>(config, disabled_monitors),
     ]
     .into_iter()
