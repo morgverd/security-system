@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use log::{debug, warn};
 use reqwest::Client;
 use tokio::time::sleep;
-use crate::config::EnvConfig;
+use crate::config::AppConfig;
 use crate::monitors::Monitor;
 
 /*
@@ -22,7 +22,7 @@ pub(crate) struct SentryCronMonitor {
 impl Monitor for SentryCronMonitor {
     fn name() -> &'static str { "sentry" }
 
-    fn from_config(config: &EnvConfig) -> Option<Self> {
+    fn from_config(config: &AppConfig) -> Option<Self> {
         if let Some(url) = &config.sentry_cron_url {
             Some(SentryCronMonitor { url: url.clone(), interval: config.sentry_cron_interval.clone() })
         } else {

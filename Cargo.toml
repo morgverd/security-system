@@ -1,6 +1,6 @@
 [package]
 name = "security-system"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -13,11 +13,10 @@ tokio = { version = "1.41.1", features = ["full"] }
 warp = "0.3.7"
 serde = { version = "1.0.214", features = ["derive"] }
 sentry = "0.36.0"
-lazy_static = "1.5.0"
 sentry-log = "0.36.0"
 futures = "0.3.31"
 reqwest = "0.12.12"
 sentry-panic = "0.36.0"
 sentry-anyhow = "0.36.0"
 dotenv = "0.15.0"
-bincode = "1.3.3"
+sms-client = "2.0.0"

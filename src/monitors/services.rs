@@ -5,22 +5,22 @@ use log::{debug, error, info, warn};
 use tokio::process::Command;
 use tokio::time::{interval, sleep};
 use crate::alerts::AlertLevel;
-use crate::config::EnvConfig;
+use crate::config::AppConfig;
 use crate::monitors::Monitor;
 
 /*
     Check that a set of other important systemd services are still running.
     If they stop running, attempt to restart them. If that fails, send out
-    a critical warning only if it's the Alarm Modem, otherwise a warning.
+    alerts with differing AlertLevels based on the importance of the service.
  */
 
 const RETRY_ATTEMPTS: u8 = 3;
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
-const MONITORED_SERVICES: [(&str, AlertLevel); 1] = [
-    // "security_cctv_smtp",
-    // ("security_cctv_proxy", AlertLevel::Warning),
-    ("security_alarm_modem", AlertLevel::Critical)
+const MONITORED_SERVICES: [(&str, AlertLevel); 3] = [
+    ("security_cctv_smtp", AlertLevel::Critical),
+    ("security_cctv_mediamtx", AlertLevel::Warning),
+    ("security_cctv_proxy", AlertLevel::Warning)
 ];
 
 struct MonitoredServiceState {
@@ -118,7 +118,7 @@ impl Monitor for ServicesMonitor {
     #[inline]
     fn name() -> &'static str { "services" }
 
-    fn from_config(config: &EnvConfig) -> Option<Self> {
+    fn from_config(config: &AppConfig) -> Option<Self> {
         let services: Vec<MonitoredServiceState> = MONITORED_SERVICES
             .into_iter()
             .map(|(service_name, service_level)| {

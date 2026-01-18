@@ -1,20 +1,18 @@
-use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Instant, Duration, sleep};
-use anyhow::{anyhow, Context, Result};
-use lazy_static::lazy_static;
-use log::{debug, error, info, warn};
+use anyhow::{anyhow, Result};
+use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
-use tokio::fs;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex, RwLock, Semaphore};
-use crate::communications::{CommunicationProviderResult, CommunicationRegistry};
-use crate::config::EnvConfig;
+use sms_client::Client;
+use sms_client::http::HttpClient;
+use sms_client::types::sms::SmsOutgoingMessage;
+use tokio::sync::{mpsc, OnceCell, RwLock, Semaphore};
+use crate::config::AppConfig;
+
+/// (MinAlertLevel, PhoneNumber)
+pub type AlertRecipient = (u8, String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) enum AlertLevel {
@@ -22,6 +20,16 @@ pub(crate) enum AlertLevel {
     Warning,
     Critical,
     Alarm
+}
+impl AlertLevel {
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            AlertLevel::Info => 1,
+            AlertLevel::Warning => 2,
+            AlertLevel::Critical => 3,
+            AlertLevel::Alarm => 4
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,6 +44,11 @@ impl AlertInfo {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?;
         Ok(Self { source, message, level, timestamp: Some(timestamp.as_secs()) })
     }
+
+    #[inline]
+    pub fn is_alarm(&self) -> bool {
+        self.level == AlertLevel::Alarm
+    }
 }
 impl Display for AlertInfo {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -43,6 +56,7 @@ impl Display for AlertInfo {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct AlertSender {
     sender: mpsc::Sender<AlertInfo>
 }
@@ -54,155 +68,123 @@ impl AlertSender {
 }
 
 struct AlertWorker {
-    pub alarm_last: Arc<RwLock<Option<Instant>>>,
-    pub alarm_cooldown: Duration,
     pub retry_max: u64,
-    pub retry_delay: Duration,
-    pub communications: Arc<CommunicationRegistry>
+    pub retry_base_delay: Duration,
+    pub retry_max_delay: Duration,
+    pub sms_http_client: Arc<HttpClient>,
+    pub sms_recipients: Arc<Vec<AlertRecipient>>,
 }
+
 impl AlertWorker {
-    pub async fn handle(&mut self, alert: AlertInfo) -> Result<()> {
-        match alert.level {
-            AlertLevel::Alarm => self.alarm(&alert).await,
-            _ => self.broadcast(&alert).await,
-        }
-    }
+    pub async fn handle(&self, alert: &AlertInfo) -> Result<()> {
+        let mut pending_indices = self.recipients_for_level(alert.level.as_u8());
 
-    async fn alarm(&mut self, alert: &AlertInfo) -> Result<()> {
-        let now = Instant::now();
-        if let Some(alarm_last) = *self.alarm_last.read().await {
-
-            // If the alarm is in a cooldown period, log but don't process the new alarm.
-            if now.duration_since(alarm_last) < self.alarm_cooldown {
-                warn!("Alarm suppressed during cooldown: {}", alert);
-                return Ok(());
-            }
+        if pending_indices.is_empty() {
+            debug!("No recipients configured for alert level {:?}", alert.level);
+            return Ok(());
         }
 
-        info!("Entering an alarm state: {}", alert);
-        *self.alarm_last.write().await = Some(now);
+        let mut attempts = 0;
         loop {
-            match self.broadcast(&alert).await {
-                Ok(()) => break Ok(()),
-                Err(e) => {
-
-                    // If the broadcast fails to send, wait and try again.
-                    debug!("Failed to broadcast Alarm event with error: {:#?}", e);
-                    sleep(self.retry_delay).await;
-                }
-            }
-        }
-    }
-
-    async fn broadcast(&mut self, alert: &AlertInfo) -> Result<()> {
-        let providers_len = self.communications.len();
-        let mut ignored_providers = HashSet::with_capacity(providers_len);
-        let mut successes = 0;
-
-        for attempt in 1..=self.retry_max {
-            if attempt > 1 {
-                debug!(
-                    "Alert broadcast attempt {}/{}. Sleeping for {} seconds.",
-                    attempt, self.retry_max, self.retry_delay.as_secs()
-                );
-                sleep(self.retry_delay).await;
-            }
-
-            let broadcast_results = self.communications.broadcast(&alert, &ignored_providers).await;
-            let mut any_failed = false;
-
-            for (name, result) in broadcast_results.into_iter() {
-                match result {
-                    Ok(CommunicationProviderResult::Sent) => {
-                        debug!("Successfully sent alert via {}!", name);
-                        ignored_providers.insert(name);
-                        successes += 1;
-                    },
-                    Ok(CommunicationProviderResult::Invalid(e)) => {
-                        warn!("Alert is invalid for provider {} with error: {}", name, e);
-                        ignored_providers.insert(name);
-                    },
-                    Err(e) => {
-                        warn!("Failed to send alert via {} with error: {}", name, e.to_string());
-                        any_failed = true;
-                    }
-                }
-            }
-
-            if ignored_providers.len() == providers_len {
-                return if successes == 0 {
-                    Err(anyhow!("Failed to send communication to any provider as all reported it as invalid!"))
-                } else {
-                    Ok(())
-                }
-            }
-            if !any_failed {
+            let (failed_indices, last_error) = self.send_to_recipients(&pending_indices, alert).await;
+            if failed_indices.is_empty() {
                 return Ok(());
             }
-        }
 
-        if successes == 0 {
-            Err(anyhow!(
-                "Failed to send communication to any providers after {} attempts!",
-                self.retry_max
-            ))
-        } else {
-            warn!(
-                "Failed to send communication to all providers after {} attempts, but did send to {}/{}.",
-                self.retry_max,
-                successes,
-                providers_len
+            attempts += 1;
+            if attempts >= self.retry_max {
+                return Err(anyhow!(
+                    "Broadcast failed for {} recipient(s) after {} retries: {:#?}",
+                    failed_indices.len(),
+                    self.retry_max,
+                    last_error
+                ))
+            }
+
+            let delay = self.calculate_backoff(attempts);
+            debug!(
+                "Failed to send to {} recipient(s) (attempt {}/{}), retrying in {:?}",
+                failed_indices.len(), attempts, self.retry_max, delay
             );
-            Ok(())
+            sleep(delay).await;
+
+            pending_indices = failed_indices;
         }
     }
-}
 
-async fn save_state(alert: &AlertInfo, state_path: &PathBuf) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(state_path)
-        .await?;
-    let data = bincode::serialize(alert)?;
-    file.write_all(&*data).await.map_err(anyhow::Error::from)
-}
-
-async fn delete_state(state_path: &PathBuf) -> Result<()> {
-    if state_path.exists() {
-        fs::remove_file(state_path).await?;
+    fn recipients_for_level(&self, alert_level: u8) -> Vec<usize> {
+        self.sms_recipients
+            .iter()
+            .enumerate()
+            .filter(|(_, (min_level, _))| *min_level <= alert_level)
+            .map(|(i, _)| i)
+            .collect()
     }
-    Ok(())
+
+    async fn send_to_recipients(
+        &self,
+        indices: &[usize],
+        alert: &AlertInfo,
+    ) -> (Vec<usize>, Option<anyhow::Error>) {
+        let mut failed_indices = Vec::new();
+        let mut last_error = None;
+
+        for &i in indices {
+            let (_, recipient) = &self.sms_recipients[i];
+            let message = SmsOutgoingMessage::simple_message(recipient, alert.to_string());
+
+            match self.sms_http_client.send_sms(&message).await {
+                Ok(response) => {
+                    debug!("Sent message ID #{} to: {}", response.message_id, recipient);
+                }
+                Err(e) => {
+                    warn!("Failed to send alert to {}: {:#?}", recipient, e);
+                    last_error = Some(e.into());
+                    failed_indices.push(i);
+                }
+            }
+        }
+
+        (failed_indices, last_error)
+    }
+
+    #[inline]
+    fn calculate_backoff(&self, attempt: u64) -> Duration {
+        let backoff = self.retry_base_delay.saturating_mul(1 << (attempt - 1).min(6));
+        backoff.min(self.retry_max_delay)
+    }
 }
 
 pub(crate) struct AlertManager {
     alarm_cooldown: Duration,
-    retry_delay: Duration,
-    retry_max: u64,
-    states_dir_path: PathBuf,
-
     alarm_last: Arc<RwLock<Option<Instant>>>,
-    communications: Arc<CommunicationRegistry>,
+
+    retry_base_delay: Duration,
+    retry_max_delay: Duration,
+    retry_max: u64,
+
+    sms_http_client: Arc<HttpClient>,
+    sms_recipients: Arc<Vec<AlertRecipient>>,
 
     semaphore: Arc<Semaphore>,
-    counter: Arc<AtomicUsize>,
     receiver: mpsc::Receiver<AlertInfo>
 }
 impl AlertManager {
-    pub fn new(config: &EnvConfig, communications: CommunicationRegistry) -> (Self, AlertSender) {
+    pub fn new(config: &AppConfig, sms_client: Client) -> (Self, AlertSender) {
         let (sender, receiver) = mpsc::channel::<AlertInfo>(100);
         (
             Self {
                 alarm_cooldown: Duration::from_secs(config.alarm_cooldown),
-                retry_delay: Duration::from_secs(config.alerts_retry_delay),
-                retry_max: config.alerts_retry_max,
-                states_dir_path: config.alerts_states_dir.clone(),
-
                 alarm_last: Arc::new(RwLock::new(None)),
-                communications: Arc::new(communications),
+
+                retry_base_delay: Duration::from_secs(config.alerts_retry_base_delay),
+                retry_max_delay: Duration::from_secs(config.alerts_retry_max_delay),
+                retry_max: config.alerts_retry_max,
+
+                sms_http_client: sms_client.http_arc().expect("Missing SMS HttpClient!"),
+                sms_recipients: Arc::new(config.get_sms_recipients()),
 
                 semaphore: Arc::new(Semaphore::new(config.alerts_concurrency_limit)),
-                counter: Arc::new(AtomicUsize::new(0)),
                 receiver
             },
             AlertSender { sender }
@@ -210,113 +192,72 @@ impl AlertManager {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        debug!("Processing pending alerts...");
-        for (pending, state_path) in self.load_existing_states().await?.into_iter() {
-            self.execute(pending, state_path).await;
-        }
-
         debug!("AlertManager starting to process channel alerts...");
         while let Some(alert) = self.receiver.recv().await {
-            let state_path = self.create_state_path();
-            if let Err(e) = save_state(&alert, &state_path).await {
-                warn!("Failed to save alert state {} with error: {:#?}", state_path.to_str().unwrap_or("Unknown"), e);
-            }
-            self.execute(alert, state_path).await;
+            self.execute(alert).await;
         }
 
         Err(anyhow!("Alert channel closed, no more alerts can be processed!"))
     }
 
-    async fn execute(&self, alert: AlertInfo, state_path: PathBuf) {
+    async fn execute(&self, alert: AlertInfo) {
+        let is_alarm = alert.is_alarm();
+        if is_alarm {
+            let mut alarm_last_guard = self.alarm_last.write().await;
+            let now = Instant::now();
 
-        let mut worker = self.create_worker();
-        let semaphore = Arc::clone(&self.semaphore);
+            if let Some(last) = *alarm_last_guard {
+                if now.duration_since(last) < self.alarm_cooldown {
+                    warn!("Alarm suppressed during cooldown: {}", alert);
+                    return;
+                }
+            }
+
+            *alarm_last_guard = Some(now);
+        }
+
+        let worker = self.create_worker();
+        let permit = if is_alarm {
+            None
+        } else {
+            self.semaphore.clone().acquire_owned().await.ok()
+        };
 
         tokio::spawn(async move {
-            let permit = semaphore.acquire().await.expect("Failed to acquire semaphore!");
-            match worker.handle(alert).await {
+            let _permit = permit;
+            match worker.handle(&alert).await {
                 Ok(()) => debug!("Successfully processed alert!"),
                 Err(e) => error!("Failed to process alert: {:#?}", e)
             }
-
-            // TODO: Maybe only delete the state on success?
-            if let Err(e) = delete_state(&state_path).await {
-                warn!("Failed to delete alert state {} with error: {:#?}", state_path.to_str().unwrap_or("Unknown"), e);
-            }
-            drop(permit);
         });
-    }
-
-    async fn load_existing_states(&self) -> Result<Vec<(AlertInfo, PathBuf)>> {
-        let mut dir_entries = fs::read_dir(&self.states_dir_path).await.context("Failed to read states directory!")?;
-        let mut alerts: Vec<_> = vec![];
-
-        while let Some(entry) = dir_entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("bin") {
-                match Self::load_state_file(&path).await {
-                    Ok(alert) => alerts.push((alert, path.clone())),
-                    Err(e) => warn!("Failed to load existing state with error: {:#?}", e)
-                }
-            }
-        }
-
-        // Ensure the worker counter starts after the last stored to prevent overwriting.
-        let size = alerts.len();
-        debug!("Loaded {} existing alert states!", size);
-        if size > 0 {
-            self.counter.fetch_add(size + 1, Ordering::SeqCst);
-        }
-        Ok(alerts)
-    }
-
-    async fn load_state_file(path: &PathBuf) -> Result<AlertInfo> {
-        let mut file = fs::File::open(&path).await.context(format!("Failed to open file: {:?}", path))?;
-        let mut contents = vec![];
-
-        file.read_to_end(&mut contents).await.context(format!("Failed to read file: {:?}", path))?;
-        bincode::deserialize(&contents).context(format!("Failed to deserialize AlertInfo binary data: {:?}", path))
-    }
-
-    fn create_state_path(&self) -> PathBuf {
-        let unique_id = self.counter.fetch_add(1, Ordering::SeqCst);
-        self.states_dir_path.join(format!("{}.bin", unique_id))
     }
 
     fn create_worker(&self) -> AlertWorker {
         AlertWorker {
-            alarm_cooldown: self.alarm_cooldown,
-            retry_delay: self.retry_delay,
+            retry_base_delay: self.retry_base_delay,
+            retry_max_delay: self.retry_max_delay,
             retry_max: self.retry_max,
-            alarm_last: Arc::clone(&self.alarm_last),
-            communications: Arc::clone(&self.communications)
+            sms_http_client: Arc::clone(&self.sms_http_client),
+            sms_recipients: Arc::clone(&self.sms_recipients)
         }
     }
 }
 
-lazy_static! {
-    static ref ALERT_SENDER: Arc<Mutex<Option<AlertSender>>> = Arc::new(Mutex::new(None));
-}
+static ALERT_SENDER: OnceCell<AlertSender> = OnceCell::const_new();
 
-pub async fn initialize_alert_manager(config: &EnvConfig) -> Result<AlertManager> {
-    let registry = CommunicationRegistry::new(&config)
-        .context("Failed to initialize communication registry!")?;
+pub async fn initialize_alert_manager(config: &AppConfig) -> Result<AlertManager> {
+    let sms_client = Client::new(config.get_sms_config())?;
+    let (manager, sender) = AlertManager::new(config, sms_client);
 
-    let (manager, sender) = AlertManager::new(&config, registry);
-    {
-        let mut lock = ALERT_SENDER.lock().await;
-        *lock = Some(sender);
-    }
+    ALERT_SENDER.set(sender)
+        .map_err(|_| anyhow!("AlertSender already initialized!"))?;
 
-    debug!("Initialized AlertManger with a valid communication registry!");
     Ok(manager)
 }
 
-/// Send an alert to the AlertManager via channel.
 pub async fn send_alert(alert: AlertInfo) -> Result<()> {
-    let lock = ALERT_SENDER.lock().await;
-    let sender = lock.as_ref()
-        .ok_or_else(|| anyhow!("AlertSender is not initialized!"))?;
-
-    sender.send(alert).await
+    ALERT_SENDER.get()
+        .ok_or_else(|| anyhow!("AlertSender is not initialized!"))?
+        .send(alert)
+        .await
 }

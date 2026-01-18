@@ -5,12 +5,12 @@ use log::{debug, info, warn};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use crate::alerts::AlertLevel;
-use crate::config::EnvConfig;
+use crate::config::AppConfig;
 use crate::monitors::Monitor;
 
 /*
-    Check that the system still has an internet connection to send notifications to.
-    Eventually, this should send out notification via SMS if offline.
+    Check that the building still has an internet connection.
+    Alerts are sent by SMS now, so this is just for general building monitoring.
  */
 
 const PING_ADDR: &str = "google.com:80";
@@ -26,7 +26,7 @@ impl Monitor for InternetMonitor {
 
     fn name() -> &'static str { "internet" }
 
-    fn from_config(config: &EnvConfig) -> Option<Self>
+    fn from_config(config: &AppConfig) -> Option<Self>
     where
         Self: Sized
     {
@@ -57,14 +57,14 @@ impl Monitor for InternetMonitor {
                     info!("Now online!");
 
                     self.online = true;
-                    Self::send_alert("Security system has reconnected to the internet.".to_owned(), AlertLevel::Warning).await?;
+                    Self::send_alert("Security system has reconnected to the internet.".to_owned(), AlertLevel::Info).await?;
                 }
             } else {
                 if self.online {
                     info!("Now offline!");
 
                     self.online = false;
-                    Self::send_alert("The security system has lost it's internet connection.".to_owned(), AlertLevel::Warning).await?;
+                    Self::send_alert("The security system has lost it's internet connection.".to_owned(), AlertLevel::Info).await?;
                 }
             }
             sleep(self.interval_duration).await;

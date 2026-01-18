@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use log::{debug, error, info, warn};
 use tokio::task::JoinHandle;
 use crate::alerts::{AlertInfo, AlertLevel, send_alert};
-use crate::config::EnvConfig;
+use crate::config::AppConfig;
 use crate::monitors::internet::InternetMonitor;
 use crate::monitors::sentry::SentryCronMonitor;
 use crate::monitors::services::ServicesMonitor;
@@ -24,7 +24,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Creates a new monitor instance with given configuration.
     /// Implementations can override this for custom initialization.
     /// If None is returned, the monitor is not run.
-    fn from_config(config: &EnvConfig) -> Option<Self>
+    fn from_config(config: &AppConfig) -> Option<Self>
     where
         Self: Sized;
 
@@ -58,7 +58,7 @@ async fn run_monitor<T: Monitor>(mut monitor: T) {
     }
 }
 
-fn try_from_config<T: Monitor>(config: &EnvConfig, disabled_monitors: Option<&HashSet<String>>) -> Option<JoinHandle<()>> {
+fn try_from_config<T: Monitor>(config: &AppConfig, disabled_monitors: Option<&HashSet<String>>) -> Option<JoinHandle<()>> {
     let name = T::name();
     if let Some(disabled_monitors) = disabled_monitors {
         if disabled_monitors.contains(name) {
@@ -76,7 +76,7 @@ fn try_from_config<T: Monitor>(config: &EnvConfig, disabled_monitors: Option<&Ha
     }
 }
 
-pub(crate) async fn spawn_monitors(config: &EnvConfig) -> Vec<JoinHandle<()>> {
+pub(crate) async fn spawn_monitors(config: &AppConfig) -> Vec<JoinHandle<()>> {
     let disabled_monitors = config.disabled_monitors.as_ref();
     vec![
         try_from_config::<SentryCronMonitor>(config, disabled_monitors),

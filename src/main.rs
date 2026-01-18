@@ -5,8 +5,8 @@ use futures::future::select_all;
 use log::{debug, info, warn};
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
+use crate::config::AppConfig;
 use crate::alerts::initialize_alert_manager;
-use crate::config::from_env;
 use crate::monitors::spawn_monitors;
 use crate::webhooks::get_routes;
 
@@ -14,12 +14,11 @@ mod webhooks;
 mod monitors;
 mod alerts;
 mod config;
-mod communications;
 
 fn main() -> Result<()> {
 
     dotenv().ok();
-    let config = from_env()?;
+    let config = AppConfig::from_env()?;
 
     let mut log_builder = env_logger::Builder::new();
     log_builder.filter_level(config.log_level);
@@ -80,7 +79,7 @@ fn main() -> Result<()> {
             let warp_handle = tokio::spawn(async move {
                 let (addr, server) = warp::serve(get_routes())
                     .bind_with_graceful_shutdown(
-                        config.server_addr,
+                        config.http_addr,
                         async move { let _ = warp_shutdown_rx.await; }
                     );
 

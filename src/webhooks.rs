@@ -15,9 +15,7 @@ impl warp::reject::Reject for AuthError {}
 #[serde(rename_all = "PascalCase")]
 struct AlarmEvent {
     input1: Option<String>,
-    event_type: String,
-    extra_text: String,
-    date_time: String
+    extra_text: String
 }
 
 async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, Rejection> {
@@ -34,14 +32,6 @@ async fn handle_cctv_webhook(_: (), payload: AlarmEvent) -> Result<impl Reply, R
     Ok(warp::reply::json(&serde_json::json!({
         "status": "success",
         "message": "CCTV webhook processed"
-    })))
-}
-
-async fn handle_alarm_webhook(_: ()) -> Result<impl Reply, Rejection> {
-    info!("Received alarm webhook");
-    Ok(warp::reply::json(&serde_json::json!({
-        "status": "success",
-        "message": "Alarm webhook processed"
     })))
 }
 
@@ -86,18 +76,10 @@ pub(crate) fn get_routes() -> impl Filter<Extract = (impl Reply,), Error = Infal
             }
         });
 
-    let cctv_webhook = warp::post()
+    warp::post()
         .and(warp::path("cctv"))
         .and(auth_header.clone())
         .and(warp::body::json())
-        .and_then(handle_cctv_webhook);
-
-    let alarm_webhook = warp::post()
-        .and(warp::path("alarm"))
-        .and(auth_header)
-        .and_then(handle_alarm_webhook);
-
-    cctv_webhook
-        .or(alarm_webhook)
+        .and_then(handle_cctv_webhook)
         .recover(handle_rejection)
 }
