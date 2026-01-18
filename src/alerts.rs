@@ -1,10 +1,9 @@
-use crate::config::{AppConfig, SMSRecipient};
-use anyhow::{anyhow, Result};
+use crate::communications::{CommunicationProviderResult, CommunicationRegistry};
+use crate::config::AppConfig;
+use anyhow::{anyhow, Context, Result};
 use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
-use sms_client::http::HttpClient;
-use sms_client::types::sms::SmsOutgoingMessage;
-use sms_client::Client;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -73,96 +72,84 @@ impl AlertSender {
 
 struct AlertWorker {
     pub retry_max: u64,
-    pub retry_base_delay: Duration,
-    pub retry_max_delay: Duration,
-    pub sms_http_client: Arc<HttpClient>,
-    pub sms_recipients: Arc<Vec<SMSRecipient>>,
+    pub retry_delay: Duration,
+    pub communications: Arc<CommunicationRegistry>,
 }
 impl AlertWorker {
-    pub async fn handle(&self, alert: &AlertInfo) -> Result<()> {
-        let mut pending_indices = self.recipients_for_level(alert.level.as_u8());
-        if pending_indices.is_empty() {
-            debug!("No recipients configured for alert level {:?}", alert.level);
-            return Ok(());
-        }
+    async fn handle(&mut self, alert: &AlertInfo) -> Result<()> {
+        let providers_len = self.communications.len();
+        let mut ignored_providers = HashSet::with_capacity(providers_len);
+        let mut successes = 0;
 
-        let mut attempts = 0;
-        loop {
-            let (failed_indices, last_error) =
-                self.send_to_recipients(&pending_indices, alert).await;
-            if failed_indices.is_empty() {
+        for attempt in 1..=self.retry_max {
+            if attempt > 1 {
+                debug!(
+                    "Alert broadcast {:?} attempt {}/{}. Sleeping for {} seconds.",
+                    alert,
+                    attempt,
+                    self.retry_max,
+                    self.retry_delay.as_secs()
+                );
+                sleep(self.retry_delay).await;
+            }
+
+            let broadcast_results = self
+                .communications
+                .broadcast(&alert, &ignored_providers)
+                .await;
+            let mut any_failed = false;
+
+            for (name, result) in broadcast_results.into_iter() {
+                match result {
+                    Ok(CommunicationProviderResult::Sent) => {
+                        debug!("Successfully sent alert via {}!", name);
+                        ignored_providers.insert(name);
+                        successes += 1;
+                    }
+                    Ok(CommunicationProviderResult::Invalid(e)) => {
+                        warn!("Alert is invalid for provider {} with error: {}", name, e);
+                        ignored_providers.insert(name);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to send alert via {} with error: {}",
+                            name,
+                            e.to_string()
+                        );
+                        any_failed = true;
+                    }
+                }
+            }
+
+            if ignored_providers.len() == providers_len {
+                return if successes == 0 {
+                    Err(anyhow!("Failed to send communication to any provider as all reported it as invalid!"))
+                } else {
+                    Ok(())
+                };
+            }
+            if !any_failed {
+                debug!(
+                    "No communication providers failed, meaning all were successful or none ran."
+                );
                 return Ok(());
             }
+        }
 
-            attempts += 1;
-            if attempts >= self.retry_max {
-                return Err(anyhow!(
-                    "Broadcast failed for {} recipient(s) after {} retries: {:#?}",
-                    failed_indices.len(),
-                    self.retry_max,
-                    last_error
-                ));
-            }
-
-            let delay = self.calculate_backoff(attempts);
-            debug!(
-                "Failed to send to {} recipient(s) (attempt {}/{}), retrying in {:?}",
-                failed_indices.len(),
-                attempts,
+        if successes == 0 {
+            Err(anyhow!(
+                "Failed to send communication to any providers after {} attempts!",
+                self.retry_max
+            ))
+        } else {
+            warn!(
+                "Failed to send communication to all providers after {} attempts, but did send to {}/{}.",
                 self.retry_max,
-                delay
+                successes,
+                providers_len
             );
-            sleep(delay).await;
-
-            pending_indices = failed_indices;
+            Ok(())
         }
-    }
-
-    fn recipients_for_level(&self, alert_level: u8) -> Vec<usize> {
-        self.sms_recipients
-            .iter()
-            .enumerate()
-            .filter(|(_, recipient)| recipient.level <= alert_level)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    async fn send_to_recipients(
-        &self,
-        indices: &[usize],
-        alert: &AlertInfo,
-    ) -> (Vec<usize>, Option<anyhow::Error>) {
-        let mut failed_indices = Vec::new();
-        let mut last_error = None;
-
-        for &i in indices {
-            let recipient = &self.sms_recipients[i];
-            let message = SmsOutgoingMessage::simple_message(&recipient.phone, alert.to_string());
-
-            match self.sms_http_client.send_sms(&message).await {
-                Ok(response) => {
-                    debug!(
-                        "Sent message ID #{} to: {}",
-                        response.message_id, recipient.phone
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to send alert to {}: {:#?}", recipient.phone, e);
-                    last_error = Some(e.into());
-                    failed_indices.push(i);
-                }
-            }
-        }
-
-        (failed_indices, last_error)
-    }
-
-    #[inline]
-    fn calculate_backoff(&self, attempt: u64) -> Duration {
-        let backoff = self
-            .retry_base_delay
-            .saturating_mul(1 << (attempt - 1).min(6));
-        backoff.min(self.retry_max_delay)
     }
 }
 
@@ -170,36 +157,33 @@ pub(crate) struct AlertManager {
     alarm_cooldown: Duration,
     alarm_last: Arc<RwLock<Option<Instant>>>,
 
-    retry_base_delay: Duration,
-    retry_max_delay: Duration,
+    retry_delay: Duration,
     retry_max: u64,
 
-    sms_http_client: Arc<HttpClient>,
-    sms_recipients: Arc<Vec<SMSRecipient>>,
-
+    communications: Arc<CommunicationRegistry>,
     semaphore: Arc<Semaphore>,
     receiver: mpsc::Receiver<AlertInfo>,
 }
 impl AlertManager {
-    pub fn new(config: &AppConfig, sms_client: Client) -> (Self, AlertSender) {
+    pub fn new(config: &AppConfig) -> Result<(Self, AlertSender)> {
+        let registry = CommunicationRegistry::new(&config.communications)
+            .context("Failed to initialize communication registry!")?;
+
         let (sender, receiver) = mpsc::channel::<AlertInfo>(100);
-        (
+        Ok((
             Self {
                 alarm_cooldown: Duration::from_secs(config.alerts.alarm_cooldown),
                 alarm_last: Arc::new(RwLock::new(None)),
 
-                retry_base_delay: Duration::from_secs(config.alerts.send_retry_base_delay),
-                retry_max_delay: Duration::from_secs(config.alerts.send_retry_max_delay),
+                retry_delay: Duration::from_secs(config.alerts.send_retry_delay),
                 retry_max: config.alerts.send_retry_max,
 
-                sms_http_client: sms_client.http_arc().expect("Missing SMS HttpClient!"),
-                sms_recipients: Arc::new(config.sms.recipients.clone()),
-
+                communications: Arc::new(registry),
                 semaphore: Arc::new(Semaphore::new(config.alerts.send_concurrency_limit)),
                 receiver,
             },
             AlertSender { sender },
-        )
+        ))
     }
 
     pub async fn run(mut self) -> Result<()> {
@@ -214,8 +198,6 @@ impl AlertManager {
     }
 
     async fn execute(&self, alert: AlertInfo) {
-        debug!("Executing alert: {alert:?}");
-
         let is_alarm = alert.is_alarm();
         if is_alarm {
             let mut alarm_last_guard = self.alarm_last.write().await;
@@ -231,7 +213,7 @@ impl AlertManager {
             *alarm_last_guard = Some(now);
         }
 
-        let worker = self.create_worker();
+        let mut worker = self.create_worker();
         let permit = if is_alarm {
             None
         } else {
@@ -240,6 +222,8 @@ impl AlertManager {
 
         tokio::spawn(async move {
             let _permit = permit;
+
+            debug!("Executing alert: {alert:?}");
             match worker.handle(&alert).await {
                 Ok(()) => debug!("Successfully processed alert!"),
                 Err(e) => error!("Failed to process alert: {e:#?}"),
@@ -249,11 +233,9 @@ impl AlertManager {
 
     fn create_worker(&self) -> AlertWorker {
         AlertWorker {
-            retry_base_delay: self.retry_base_delay,
-            retry_max_delay: self.retry_max_delay,
+            retry_delay: self.retry_delay,
             retry_max: self.retry_max,
-            sms_http_client: Arc::clone(&self.sms_http_client),
-            sms_recipients: Arc::clone(&self.sms_recipients),
+            communications: self.communications.clone(),
         }
     }
 }
@@ -261,9 +243,7 @@ impl AlertManager {
 static ALERT_SENDER: OnceCell<AlertSender> = OnceCell::const_new();
 
 pub async fn initialize_alert_manager(config: &AppConfig) -> Result<AlertManager> {
-    let sms_client = Client::new(config.sms.get_sms_config())?;
-    let (manager, sender) = AlertManager::new(config, sms_client);
-
+    let (manager, sender) = AlertManager::new(config)?;
     ALERT_SENDER
         .set(sender)
         .map_err(|_| anyhow!("AlertSender already initialized!"))?;

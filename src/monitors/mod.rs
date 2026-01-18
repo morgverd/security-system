@@ -66,9 +66,7 @@ fn try_from_config<T: Monitor>(
     match T::from_config(config) {
         Some(monitor) => Some(tokio::spawn(run_monitor(monitor))),
         None => {
-            warn!(
-                "The {name} monitor is disabled or has invalid configuration!"
-            );
+            warn!("The {name} monitor is disabled or has invalid configuration!");
             None
         }
     }

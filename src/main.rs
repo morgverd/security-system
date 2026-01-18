@@ -11,6 +11,7 @@ use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
 
 mod alerts;
+mod communications;
 mod config;
 mod monitors;
 mod webhooks;

@@ -21,8 +21,8 @@ pub(crate) struct AppConfig {
     #[serde(default)]
     pub monitors: MonitorsConfig,
 
-    // REQUIRED
-    pub sms: SMSConfig,
+    #[serde(default)]
+    pub communications: CommunicationsConfig,
 }
 impl AppConfig {
     pub fn load(config_filepath: Option<PathBuf>) -> Result<Self> {
@@ -65,11 +65,8 @@ pub(crate) struct AlertsConfig {
     #[serde(default = "default_alerts_send_retry_max")]
     pub send_retry_max: u64,
 
-    #[serde(default = "default_alerts_send_retry_base_delay")]
-    pub send_retry_base_delay: u64,
-
-    #[serde(default = "default_alerts_send_retry_max_delay")]
-    pub send_retry_max_delay: u64,
+    #[serde(default = "default_alerts_send_retry_delay")]
+    pub send_retry_delay: u64,
 
     #[serde(default = "default_alerts_send_concurrency_limit")]
     pub send_concurrency_limit: usize,
@@ -79,8 +76,7 @@ impl Default for AlertsConfig {
         Self {
             alarm_cooldown: default_alarm_cooldown(),
             send_retry_max: default_alerts_send_retry_max(),
-            send_retry_base_delay: default_alerts_send_retry_base_delay(),
-            send_retry_max_delay: default_alerts_send_retry_max_delay(),
+            send_retry_delay: default_alerts_send_retry_delay(),
             send_concurrency_limit: default_alerts_send_concurrency_limit(),
         }
     }
@@ -123,10 +119,38 @@ impl Default for MonitorsConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct SMSConfig {
-    http_base: String,                 // REQUIRED
-    pub recipients: Vec<SMSRecipient>, // REQUIRED
+#[derive(Debug, Clone, Default, Deserialize)]
+pub(crate) struct CommunicationsConfig {
+    #[serde(default)]
+    pub pushover: Option<PushoverCommunicationConfig>,
+
+    #[serde(default)]
+    pub sms: Option<SMSCommunicationConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct CommunicationRecipient {
+    pub id: String,
+
+    #[serde(default = "default_sms_recipient_level")]
+    pub level: u8,
+}
+impl CommunicationRecipient {
+    pub fn is_target_level(&self, level: u8) -> bool {
+        self.level > level
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PushoverCommunicationConfig {
+    pub token: String,                           // REQUIRED
+    pub recipients: Vec<CommunicationRecipient>, // REQUIRED
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct SMSCommunicationConfig {
+    http_base: String,                           // REQUIRED
+    pub recipients: Vec<CommunicationRecipient>, // REQUIRED
 
     #[serde(default)]
     auth: Option<String>,
@@ -134,7 +158,7 @@ pub(crate) struct SMSConfig {
     #[serde(default)]
     certificate_path: Option<String>,
 }
-impl SMSConfig {
+impl SMSCommunicationConfig {
     pub fn get_sms_config(&self) -> ClientConfig {
         let mut config = ClientConfig::http_only(&self.http_base);
         if let Some(auth) = &self.auth {
@@ -149,14 +173,6 @@ impl SMSConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct SMSRecipient {
-    pub phone: String, // REQUIRED
-
-    #[serde(default = "default_sms_recipient_level")]
-    pub level: u8,
-}
-
 fn default_http_addr() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080)
 }
@@ -164,13 +180,10 @@ fn default_alarm_cooldown() -> u64 {
     300
 }
 fn default_alerts_send_retry_max() -> u64 {
-    8
+    60
 }
-fn default_alerts_send_retry_base_delay() -> u64 {
-    2
-}
-fn default_alerts_send_retry_max_delay() -> u64 {
-    90
+fn default_alerts_send_retry_delay() -> u64 {
+    60
 }
 fn default_alerts_send_concurrency_limit() -> usize {
     4

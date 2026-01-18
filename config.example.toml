@@ -6,3 +6,8 @@ recipients = [ # REQUIRED
     { phone = "+4412345678", level = 0 }, # Receive all alert levels
     { phone = "+4487654321", level = 4 }, # Receive only Alarm alerts
 ]
+
+[pushover]
+recipients = [ # OPTIONAL
+    { id = "abc123_user_token", level = 3 }
+]

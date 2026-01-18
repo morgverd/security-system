@@ -4,6 +4,7 @@ use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
 use anyhow::Result;
 use async_trait::async_trait;
+
 /*
    Check that the building still has an internet connection.
    Alerts are sent by SMS now, so this is just for general building monitoring.

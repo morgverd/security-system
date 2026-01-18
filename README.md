@@ -7,7 +7,7 @@ It also runs a HTTP server to accept webhooks from the CCTV SMTP and Alarm Modem
 
 ### Sources
 
-The system receives webhook events on either `/cctv` or `/alarm` and will then send out an alert.
+The system receives webhook events on `/cctv` and will then send out an alert.
 
 - CCTV: https://github.com/morgverd/cctv-smtp-alerts
 
@@ -19,6 +19,7 @@ The system can also send alerts if a monitor fails, this is used to verify that 
 - `internet` - Verify that there is still an internet connection to send alarm notifications.
 - `power` - Verify that the Pi still has a direct power connection (as it runs through a battery).
 - `services` - Verify that the other local systemctl services are running (CCTV SMTP, Alarm Modem)
+- `cron` - Send a GET request to CRON URL per CRON interval. Useful for health-checks / Sentry CRON.
 
 ### Alerts
 
