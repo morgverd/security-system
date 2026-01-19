@@ -2,8 +2,6 @@ use crate::alerts::AlertLevel;
 use crate::config::MonitorsConfig;
 use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
-use anyhow::Result;
-use async_trait::async_trait;
 
 /*
    Check that the building still has an internet connection.
@@ -12,7 +10,7 @@ use async_trait::async_trait;
 
 pub(crate) struct InternetMonitor(PingMonitor);
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Monitor for InternetMonitor {
     fn name() -> &'static str {
         "internet"
@@ -28,7 +26,7 @@ impl Monitor for InternetMonitor {
         )))
     }
 
-    async fn run(&mut self) -> Result<()> {
+    async fn run(&mut self) -> anyhow::Result<()> {
         loop {
             let event = self.0.run().await;
             Self::send_alert(event.message, AlertLevel::Info).await?;

@@ -1,12 +1,7 @@
 use crate::alerts::AlertLevel;
 use crate::config::MonitorsConfig;
 use crate::monitors::Monitor;
-use anyhow::Result;
-use async_trait::async_trait;
 use log::{debug, error, info, warn};
-use std::time::Duration;
-use tokio::process::Command;
-use tokio::time::{interval, sleep};
 
 /*
    Check that a set of other important systemd services are still running.
@@ -14,8 +9,9 @@ use tokio::time::{interval, sleep};
    alerts with differing AlertLevels based on the importance of the service.
 */
 
+// TODO: Make into config values.
 const RETRY_ATTEMPTS: u8 = 3;
-const RETRY_DELAY: Duration = Duration::from_secs(5);
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
 const MONITORED_SERVICES: [(&str, AlertLevel); 3] = [
     ("security_cctv_smtp", AlertLevel::Critical),
@@ -36,8 +32,8 @@ pub(crate) struct ServicesMonitor {
 }
 
 impl ServicesMonitor {
-    async fn is_service_active(name: &str) -> Result<bool> {
-        let output = Command::new("systemctl")
+    async fn is_service_active(name: &str) -> anyhow::Result<bool> {
+        let output = tokio::process::Command::new("systemctl")
             .arg("is-active")
             .arg(name)
             .output()
@@ -46,8 +42,8 @@ impl ServicesMonitor {
         Ok(output.status.success())
     }
 
-    async fn attempt_service_restart(name: &str) -> Result<bool> {
-        let output = Command::new("systemctl")
+    async fn attempt_service_restart(name: &str) -> anyhow::Result<bool> {
+        let output = tokio::process::Command::new("systemctl")
             .arg("restart")
             .arg(name)
             .output()
@@ -56,7 +52,7 @@ impl ServicesMonitor {
         Ok(output.status.success())
     }
 
-    async fn handle_offline_service(service: &mut MonitoredServiceState) -> Result<()> {
+    async fn handle_offline_service(service: &mut MonitoredServiceState) -> anyhow::Result<()> {
         service.retry_count += 1;
 
         // Keep retrying restarts until the retry limit is met.
@@ -65,7 +61,7 @@ impl ServicesMonitor {
             service.name, service.retry_count, RETRY_ATTEMPTS
         );
         if service.retry_count <= RETRY_ATTEMPTS {
-            sleep(RETRY_DELAY).await;
+            tokio::time::sleep(RETRY_DELAY).await;
 
             info!("Attempting to restart service {}!", &service.name);
             if Self::attempt_service_restart(&service.name).await? {
@@ -92,7 +88,7 @@ impl ServicesMonitor {
         Ok(())
     }
 
-    async fn check_service(service: &mut MonitoredServiceState) -> Result<()> {
+    async fn check_service(service: &mut MonitoredServiceState) -> anyhow::Result<()> {
         // Do the actual service status checking here.
         debug!("Checking service {} state...", &service.name);
         match Self::is_service_active(&service.name).await {
@@ -117,7 +113,7 @@ impl ServicesMonitor {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Monitor for ServicesMonitor {
     #[inline]
     fn name() -> &'static str {
@@ -147,8 +143,8 @@ impl Monitor for ServicesMonitor {
         }
     }
 
-    async fn run(&mut self) -> Result<()> {
-        let mut interval = interval(Duration::from_secs(self.interval));
+    async fn run(&mut self) -> anyhow::Result<()> {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(self.interval));
 
         debug!("Started with an interval of {} seconds!", self.interval);
         loop {

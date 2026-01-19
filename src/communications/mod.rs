@@ -4,20 +4,16 @@ mod sms;
 use crate::alerts::AlertInfo;
 use crate::communications::pushover::PushoverCommunicationProvider;
 use crate::communications::sms::SMSCommunicationProvider;
-use crate::config::CommunicationsConfig;
+use crate::config::{CommunicationRecipient, CommunicationsConfig};
 use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use futures::future::join_all;
-use log::{debug, warn};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use log::{debug, error, warn};
 
-pub(crate) enum CommunicationProviderResult {
-    Sent,
-    Invalid(&'static str),
+pub enum CommunicationSendResultKind {
+    Completed { failed: Vec<usize> },
+    Unavailable { reason: String },
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub(crate) trait CommunicationProvider: Send + Sync + 'static {
     /// Returns the provider name for logging.
     fn name() -> &'static str
@@ -31,8 +27,22 @@ pub(crate) trait CommunicationProvider: Send + Sync + 'static {
     where
         Self: Sized;
 
+    /// Get all recipients for communication provider.
+    fn get_all_recipients(&self) -> &Vec<CommunicationRecipient>;
+
+    /// Get all target recipients for the alert level.
+    fn get_recipients(&self, alert: &AlertInfo) -> Vec<usize> {
+        let level_u8 = alert.level.as_u8();
+        self.get_all_recipients()
+            .iter()
+            .enumerate()
+            .filter(|(_, recipient)| level_u8 >= recipient.level)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
     /// Send the alert via provider.
-    async fn send(&self, alert: &AlertInfo) -> Result<CommunicationProviderResult>;
+    async fn send(&self, alert: &AlertInfo, recipients: &[usize]) -> CommunicationSendResultKind;
 }
 
 fn try_from_config<T: CommunicationProvider>(
@@ -57,8 +67,10 @@ fn try_from_config<T: CommunicationProvider>(
 }
 
 pub(crate) struct CommunicationRegistry {
-    providers: Arc<HashMap<&'static str, Box<dyn CommunicationProvider>>>,
-    size: usize,
+    providers:
+        std::sync::Arc<std::collections::HashMap<&'static str, Box<dyn CommunicationProvider>>>,
+    retry_max: u64,
+    retry_delay: std::time::Duration,
 }
 impl CommunicationRegistry {
     pub fn new(config: &CommunicationsConfig) -> Result<Self> {
@@ -77,44 +89,75 @@ impl CommunicationRegistry {
         }
 
         // Convert to HashMap for more efficient lookups.
-        let mut providers = HashMap::with_capacity(size);
+        let mut providers = std::collections::HashMap::with_capacity(size);
         for (name, provider) in providers_vec {
             providers.insert(name, provider);
         }
 
         Ok(Self {
-            providers: Arc::new(providers),
-            size,
+            providers: std::sync::Arc::new(providers),
+            retry_max: config.retry_max,
+            retry_delay: std::time::Duration::from_secs(config.retry_delay),
         })
     }
 
-    /// Broadcast an alert across all registered providers.
-    /// Accepts a set of ignored providers to skip over for retries.
-    pub async fn broadcast(
+    pub async fn broadcast(&self, alert: &AlertInfo) {
+        let futures: Vec<_> = self
+            .providers
+            .iter()
+            .map(|(name, provider)| self.send_with_retry(name, provider.as_ref(), alert))
+            .collect();
+
+        futures::future::join_all(futures).await;
+    }
+
+    async fn send_with_retry(
         &self,
+        name: &'static str,
+        provider: &dyn CommunicationProvider,
         alert: &AlertInfo,
-        ignored_providers: &HashSet<&'static str>,
-    ) -> HashMap<&'static str, Result<CommunicationProviderResult>> {
-        let ignored_empty = ignored_providers.is_empty();
-        let mut futures = Vec::with_capacity(self.size);
-        for (&name, provider) in self.providers.iter() {
-            // If there are no ignored providers include all, otherwise skip ignored.
-            if ignored_empty || !ignored_providers.contains(name) {
-                futures.push(async move { (name, provider.send(alert).await) });
+    ) {
+        let mut recipients = provider.get_recipients(alert);
+        if recipients.is_empty() {
+            debug!(
+                "There are no recipients for {} with level {:?}",
+                name, alert.level
+            );
+            return;
+        }
+
+        for attempt in 1..=self.retry_max + 1 {
+            match provider.send(alert, &recipients).await {
+                CommunicationSendResultKind::Completed { failed } if failed.is_empty() => {
+                    debug!(
+                        "Sent to all recipients of {} in {} attempt(s)!",
+                        name, attempt
+                    );
+                    return;
+                }
+                CommunicationSendResultKind::Completed { failed } => {
+                    debug!(
+                        "Attempt #{} for {}: {} recipients failed, retrying after {}s",
+                        attempt,
+                        name,
+                        failed.len(),
+                        self.retry_delay.as_secs()
+                    );
+                    recipients = failed;
+                    tokio::time::sleep(self.retry_delay).await;
+                }
+                CommunicationSendResultKind::Unavailable { reason } => {
+                    error!("Communication provider {} is unavailable: {}", name, reason);
+                    return;
+                }
             }
         }
 
-        let responses = join_all(futures).await;
-        let mut results = HashMap::with_capacity(responses.len());
-        for (name, result) in responses {
-            results.insert(name, result);
-        }
-
-        results
-    }
-
-    /// Get the length of available providers set.
-    pub fn len(&self) -> usize {
-        self.size
+        error!(
+            "{} met retry limit with {} recipients left unsent for {:?}!",
+            name,
+            recipients.len(),
+            alert
+        );
     }
 }

@@ -11,13 +11,9 @@ use crate::monitors::cctv::CCTVMonitor;
 use crate::monitors::cron::CronMonitor;
 use crate::monitors::internet::InternetMonitor;
 use crate::monitors::services::ServicesMonitor;
-use anyhow::Result;
-use async_trait::async_trait;
 use log::{debug, error, info, warn};
-use std::collections::HashSet;
-use tokio::task::JoinHandle;
 
-#[async_trait]
+#[async_trait::async_trait]
 pub(crate) trait Monitor: Send + Sync + 'static {
     /// Returns the static monitor name for logging.
     fn name() -> &'static str;
@@ -31,10 +27,10 @@ pub(crate) trait Monitor: Send + Sync + 'static {
 
     /// Run the monitor forever, returning an Err result to throw to Sentry.
     /// The monitor is always restarted after any return value.
-    async fn run(&mut self) -> Result<()>;
+    async fn run(&mut self) -> anyhow::Result<()>;
 
     /// Helper method to send alerts with the monitors name as the source.
-    async fn send_alert(message: String, level: AlertLevel) -> Result<()> {
+    async fn send_alert(message: String, level: AlertLevel) -> anyhow::Result<()> {
         let name = Self::name().to_string();
         let alert = AlertInfo::new(format!("{name}-monitor"), message, level)?;
         send_alert(alert).await
@@ -53,8 +49,8 @@ async fn run_monitor<T: Monitor>(mut monitor: T) {
 
 fn try_from_config<T: Monitor>(
     config: &MonitorsConfig,
-    disabled_monitors: Option<&HashSet<String>>,
-) -> Option<JoinHandle<()>> {
+    disabled_monitors: Option<&std::collections::HashSet<String>>,
+) -> Option<tokio::task::JoinHandle<()>> {
     let name = T::name();
     if let Some(disabled_monitors) = disabled_monitors {
         if disabled_monitors.contains(name) {
@@ -72,7 +68,7 @@ fn try_from_config<T: Monitor>(
     }
 }
 
-pub(crate) async fn spawn_monitors(config: &MonitorsConfig) -> Vec<JoinHandle<()>> {
+pub(crate) async fn spawn_monitors(config: &MonitorsConfig) -> Vec<tokio::task::JoinHandle<()>> {
     let disabled_monitors = config.disabled.as_ref();
     vec![
         try_from_config::<CCTVMonitor>(config, disabled_monitors),

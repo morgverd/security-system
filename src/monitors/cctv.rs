@@ -2,7 +2,6 @@ use crate::alerts::AlertLevel;
 use crate::config::MonitorsConfig;
 use crate::monitors::ping::PingMonitor;
 use crate::monitors::Monitor;
-use async_trait::async_trait;
 
 /*
    Check the CCTV DVR status. We should receive camera blocking / signal loss
@@ -12,7 +11,7 @@ use async_trait::async_trait;
 
 pub(crate) struct CCTVMonitor(PingMonitor);
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Monitor for CCTVMonitor {
     fn name() -> &'static str {
         "cctv"

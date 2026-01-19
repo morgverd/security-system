@@ -1,8 +1,5 @@
 use crate::config::MonitorsConfig;
 use log::{debug, info, warn};
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::time::{sleep, timeout};
 
 /*
    Used in InternetMonitor and CCTVMonitor.
@@ -19,8 +16,8 @@ pub struct PingMonitor {
     reconnected_message: &'static str,
     disconnected_message: &'static str,
     online: bool,
-    interval_duration: Duration,
-    timeout_duration: Duration,
+    interval_duration: std::time::Duration,
+    timeout_duration: std::time::Duration,
 }
 impl PingMonitor {
     pub fn new(
@@ -36,26 +33,30 @@ impl PingMonitor {
             reconnected_message,
             disconnected_message,
             online: true,
-            interval_duration: Duration::from_secs(config.ping_poll_interval),
-            timeout_duration: Duration::from_secs(config.ping_poll_timeout),
+            interval_duration: std::time::Duration::from_secs(config.ping_poll_interval),
+            timeout_duration: std::time::Duration::from_secs(config.ping_poll_timeout),
         }
     }
 
     /// Polls until a status change occurs, then returns an event with the alert message.
     pub async fn run(&mut self) -> PingEvent {
         loop {
-            let online =
-                match timeout(self.timeout_duration, TcpStream::connect(&self.ping_addr)).await {
-                    Ok(Ok(_)) => true,
-                    Ok(Err(e)) => {
-                        warn!("Ping error to {}: {}", self.ping_addr, e);
-                        false
-                    }
-                    Err(_) => {
-                        warn!("Ping timeout to {}!", self.ping_addr);
-                        false
-                    }
-                };
+            let online = match tokio::time::timeout(
+                self.timeout_duration,
+                tokio::net::TcpStream::connect(&self.ping_addr),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    warn!("Ping error to {}: {}", self.ping_addr, e);
+                    false
+                }
+                Err(_) => {
+                    warn!("Ping timeout to {}!", self.ping_addr);
+                    false
+                }
+            };
 
             debug!(
                 "{} status from ping to {}: {}.",
@@ -78,7 +79,7 @@ impl PingMonitor {
                 };
             }
 
-            sleep(self.interval_duration).await;
+            tokio::time::sleep(self.interval_duration).await;
         }
     }
 }

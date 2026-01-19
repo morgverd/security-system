@@ -1,22 +1,15 @@
 use crate::alerts::{AlertInfo, AlertLevel};
-use crate::communications::{CommunicationProvider, CommunicationProviderResult};
+use crate::communications::{CommunicationProvider, CommunicationSendResultKind};
 use crate::config::{CommunicationRecipient, CommunicationsConfig, PushoverCommunicationConfig};
-use anyhow::{anyhow, Result};
-use async_trait::async_trait;
-use futures::future::join_all;
-use log::warn;
-use reqwest::Client;
-use serde::Serialize;
 
 /*
-   Pushover Communication Provider. Should take an application token,
-   and a comma seperated list of user tokens to send notifications to.
+   Pushover Communication Provider.
    https://pushover.net/
 */
 
 const PUSHOVER_URL: &str = "https://api.pushover.net/1/messages.json";
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 struct PushoverPayload {
     pub token: String,
     pub user: String,
@@ -29,7 +22,7 @@ struct PushoverPayload {
 }
 
 pub(crate) struct PushoverCommunicationProvider {
-    client: Client,
+    client: reqwest::Client,
     config: PushoverCommunicationConfig,
 }
 impl PushoverCommunicationProvider {
@@ -40,6 +33,8 @@ impl PushoverCommunicationProvider {
         alert: &AlertInfo,
     ) -> PushoverPayload {
         let is_emergency = alert.level == AlertLevel::Alarm;
+
+        // TODO: Reduce clones, maybe Arc<str>?
         PushoverPayload {
             token: self.config.token.clone(),
             user: recipient.id.clone(),
@@ -58,7 +53,7 @@ impl PushoverCommunicationProvider {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl CommunicationProvider for PushoverCommunicationProvider {
     fn name() -> &'static str {
         "pushover"
@@ -68,58 +63,46 @@ impl CommunicationProvider for PushoverCommunicationProvider {
     where
         Self: Sized,
     {
-        if let Some(pushover) = &config.pushover {
-            if pushover.recipients.is_empty() {
-                warn!("Pushover recipients is empty!");
-                return None;
-            }
-
-            Some(Self {
-                client: Client::new(),
-                config: pushover.clone(),
-            })
-        } else {
-            None
-        }
+        config.pushover.as_ref().map(|pushover| Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(pushover.timeout))
+                .build()
+                .unwrap_or_default(),
+            config: pushover.clone(),
+        })
     }
 
-    async fn send(&self, alert: &AlertInfo) -> Result<CommunicationProviderResult> {
-        // TODO: implement level filtering, unify with monitors
-        let futures = self.config.recipients.iter().map(|user| {
-            let payload = self.create_payload(&user, &alert);
-            self.client
-                .post(PUSHOVER_URL)
-                .header("Content-Type", "application/json")
-                .header("Accept", "application/json")
-                .json(&payload)
-                .send()
+    #[inline]
+    fn get_all_recipients(&self) -> &Vec<CommunicationRecipient> {
+        &self.config.recipients
+    }
+
+    async fn send(&self, alert: &AlertInfo, recipients: &[usize]) -> CommunicationSendResultKind {
+        // Create a request future for each recipient since Pushover can handle simultaneous requests.
+        let futures = recipients.iter().map(|index| {
+            let payload = self.create_payload(&self.config.recipients[*index], alert);
+
+            async move {
+                let result = self
+                    .client
+                    .post(PUSHOVER_URL)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .json(&payload)
+                    .send()
+                    .await;
+                (index, result)
+            }
         });
 
-        let (mut got_response, mut got_success) = (false, false);
-        for result in join_all(futures).await {
+        // Join all futures, tracking each failed send.
+        let mut failed = Vec::with_capacity(recipients.len());
+        for (index, result) in futures::future::join_all(futures).await {
             match result {
-                Ok(response) => {
-                    got_response = true;
-                    let status = response.status();
-                    if status.is_success() {
-                        got_success = true;
-                    } else {
-                        warn!(
-                            "Got invalid status back from Pushover, expected 200 got {}!",
-                            status.to_string()
-                        );
-                    }
-                }
-                Err(e) => warn!("Failed to send Pushover message: {:?}", e),
+                Ok(_) => {}
+                Err(_) => failed.push(*index),
             }
         }
-
-        match (got_response, got_success) {
-            (true, false) => Ok(CommunicationProviderResult::Invalid(
-                "Pushover notification failed to send!",
-            )),
-            (_, true) => Ok(CommunicationProviderResult::Sent),
-            _ => Err(anyhow!("Failed to send any Pushover notifications!")),
-        }
+        CommunicationSendResultKind::Completed { failed }
     }
 }

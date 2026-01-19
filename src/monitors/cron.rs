@@ -1,12 +1,6 @@
 use crate::config::MonitorsConfig;
 use crate::monitors::Monitor;
-use anyhow::Result;
-use async_trait::async_trait;
 use log::{debug, warn};
-use reqwest::Client;
-use std::cmp::max;
-use std::time::Duration;
-use tokio::time::sleep;
 
 /*
    Send Sentry CRON requests per interval.
@@ -14,11 +8,12 @@ use tokio::time::sleep;
 */
 
 pub(crate) struct CronMonitor {
+    client: reqwest::Client,
     url: String,
     interval: u64,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl Monitor for CronMonitor {
     fn name() -> &'static str {
         "cron"
@@ -26,20 +21,22 @@ impl Monitor for CronMonitor {
 
     fn from_config(config: &MonitorsConfig) -> Option<Self> {
         let cron_url = config.cron_url.as_ref()?;
+
+        // TODO: Add timeout to client via builder. See PushoverCommunicationProvider.
         Some(CronMonitor {
+            client: reqwest::Client::new(),
             url: cron_url.clone(),
             interval: config.cron_interval,
         })
     }
 
-    async fn run(&mut self) -> Result<()> {
-        let error_interval = max(self.interval / 2, 1);
-        let client = Client::new();
+    async fn run(&mut self) -> anyhow::Result<()> {
+        let error_interval = std::cmp::max(self.interval / 2, 1);
 
         debug!("Started with an interval of {} seconds!", self.interval);
         loop {
             let mut current_interval = self.interval;
-            match client.get(&self.url).send().await {
+            match self.client.get(&self.url).send().await {
                 Ok(response) => {
                     if response.status().is_success() {
                         debug!("Successfully sent update!");
@@ -55,7 +52,7 @@ impl Monitor for CronMonitor {
             }
 
             // Use a shorter interval when there's an error.
-            sleep(Duration::from_secs(current_interval)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(current_interval)).await;
         }
     }
 }
