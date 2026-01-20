@@ -16,8 +16,8 @@ impl Monitor for InternetMonitor {
         "internet"
     }
 
-    fn from_config(config: &MonitorsConfig) -> Option<Self> {
-        Some(Self(PingMonitor::new(
+    fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
+        Ok(Self(PingMonitor::new(
             "internet",
             "google.com:80".to_string(),
             "The security system has reconnected to the internet.",

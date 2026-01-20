@@ -20,6 +20,19 @@ impl AlertLevel {
         }
     }
 }
+impl TryFrom<u8> for AlertLevel {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(AlertLevel::Info),
+            2 => Ok(AlertLevel::Warning),
+            3 => Ok(AlertLevel::Critical),
+            4 => Ok(AlertLevel::Alarm),
+            _ => Err("Invalid AlertLevel!"),
+        }
+    }
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AlertInfo {

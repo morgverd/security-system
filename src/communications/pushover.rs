@@ -37,7 +37,7 @@ impl PushoverCommunicationProvider {
         // TODO: Reduce clones, maybe Arc<str>?
         PushoverPayload {
             token: self.config.token.clone(),
-            user: recipient.id.clone(),
+            user: recipient.target.clone(),
             title: alert.source.clone(),
             message: alert.message.clone(),
             priority: match alert.level {
@@ -59,16 +59,21 @@ impl CommunicationProvider for PushoverCommunicationProvider {
         "pushover"
     }
 
-    fn from_config(config: &CommunicationsConfig) -> Option<Self>
+    fn from_config(config: &CommunicationsConfig) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
-        config.pushover.as_ref().map(|pushover| Self {
+        let config = match &config.pushover {
+            Some(config) => config,
+            None => return Err(anyhow::anyhow!("Missing any Pushover config!")),
+        };
+
+        Ok(Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(pushover.timeout))
+                .timeout(std::time::Duration::from_secs(config.timeout))
                 .build()
                 .unwrap_or_default(),
-            config: pushover.clone(),
+            config: config.clone(),
         })
     }
 

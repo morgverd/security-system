@@ -13,7 +13,7 @@ impl SMSCommunicationProvider {
         alert: &AlertInfo,
     ) -> sms_client::types::sms::SmsOutgoingMessage {
         sms_client::types::sms::SmsOutgoingMessage::simple_message(
-            recipient.id.clone(),
+            recipient.target.clone(),
             alert.to_string(),
         )
     }
@@ -25,18 +25,20 @@ impl CommunicationProvider for SMSCommunicationProvider {
         "sms"
     }
 
-    fn from_config(config: &CommunicationsConfig) -> Option<Self>
+    fn from_config(config: &CommunicationsConfig) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
-        if let Some(sms) = &config.sms {
-            Some(Self {
-                client: sms_client::Client::new(sms.get_sms_config()).ok()?,
-                config: sms.clone(),
-            })
-        } else {
-            None
-        }
+        let config = match &config.sms {
+            Some(config) => config,
+            None => return Err(anyhow::anyhow!("Missing any SMS config!")),
+        };
+
+        Ok(Self {
+            client: sms_client::Client::new(config.get_sms_config())
+                .map_err(|e| anyhow::anyhow!(e))?,
+            config: config.clone(),
+        })
     }
 
     #[inline]

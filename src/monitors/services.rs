@@ -1,23 +1,13 @@
 use crate::alerts::AlertLevel;
 use crate::config::MonitorsConfig;
 use crate::monitors::Monitor;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 /*
    Check that a set of other important systemd services are still running.
    If they stop running, attempt to restart them. If that fails, send out
    alerts with differing AlertLevels based on the importance of the service.
 */
-
-// TODO: Make into config values.
-const RETRY_ATTEMPTS: u8 = 3;
-const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
-
-const MONITORED_SERVICES: [(&str, AlertLevel); 3] = [
-    ("security_cctv_smtp", AlertLevel::Critical),
-    ("security_cctv_mediamtx", AlertLevel::Warning),
-    ("security_cctv_proxy", AlertLevel::Warning),
-];
 
 struct MonitoredServiceState {
     name: String,
@@ -29,8 +19,9 @@ struct MonitoredServiceState {
 pub(crate) struct ServicesMonitor {
     services: Vec<MonitoredServiceState>,
     interval: u64,
+    retry_attempts: u8,
+    retry_delay: std::time::Duration,
 }
-
 impl ServicesMonitor {
     async fn is_service_active(name: &str) -> anyhow::Result<bool> {
         let output = tokio::process::Command::new("systemctl")
@@ -52,62 +43,67 @@ impl ServicesMonitor {
         Ok(output.status.success())
     }
 
-    async fn handle_offline_service(service: &mut MonitoredServiceState) -> anyhow::Result<()> {
-        service.retry_count += 1;
+    async fn handle_offline_service(&mut self, index: usize) -> anyhow::Result<()> {
+        self.services[index].retry_count += 1;
 
-        // Keep retrying restarts until the retry limit is met.
+        let service = &self.services[index];
+        let service_name = service.name.clone();
+
         info!(
             "Service {} is offline, restart attempt {}/{}.",
-            service.name, service.retry_count, RETRY_ATTEMPTS
+            service_name, service.retry_count, self.retry_attempts
         );
-        if service.retry_count <= RETRY_ATTEMPTS {
-            tokio::time::sleep(RETRY_DELAY).await;
 
-            info!("Attempting to restart service {}!", &service.name);
-            if Self::attempt_service_restart(&service.name).await? {
-                info!("Service {} was successfully restarted!", &service.name);
-                service.retry_count = 0;
+        if service.retry_count <= self.retry_attempts {
+            tokio::time::sleep(self.retry_delay).await;
+
+            info!("Attempting to restart service {}!", &service_name);
+            if Self::attempt_service_restart(&service_name).await? {
+                info!("Service {} was successfully restarted!", &service_name);
+                self.services[index].retry_count = 0;
                 return Ok(());
             }
         }
 
-        // The service is now offline, either due to exceeding RETRY_ATTEMPTS
-        // or because the systemctl restart service command directly failed.
+        let service = &mut self.services[index];
         if !service.is_offline {
             service.is_offline = true;
             Self::send_alert(
                 format!(
                     "{} is OFFLINE after {} attempts to restart!",
-                    service.name, service.retry_count
+                    service_name, service.retry_count
                 ),
                 service.level.clone(),
             )
-            .await?;
+                .await?;
         }
 
         Ok(())
     }
 
-    async fn check_service(service: &mut MonitoredServiceState) -> anyhow::Result<()> {
+    async fn check_service(&mut self, index: usize) -> anyhow::Result<()> {
         // Do the actual service status checking here.
-        debug!("Checking service {} state...", &service.name);
-        match Self::is_service_active(&service.name).await {
+        let service_name = self.services[index].name.clone();
+        debug!("Checking service {} state...", &service_name);
+
+        match Self::is_service_active(&service_name).await {
             Ok(true) => {
                 // The service is now online.
-                debug!("Service {} is online!", &service.name);
+                debug!("Service {} is online!", &service_name);
+                let service = &mut self.services[index];
                 if service.is_offline {
                     service.is_offline = false;
                     service.retry_count = 0;
 
                     Self::send_alert(
-                        format!("{} is now ONLINE!", service.name),
+                        format!("{} is now ONLINE!", service_name),
                         service.level.clone(),
                     )
-                    .await?;
+                        .await?;
                 }
             }
-            Ok(false) => Self::handle_offline_service(service).await?,
-            Err(e) => error!("Failed to check service status {}: {}", service.name, e),
+            Ok(false) => self.handle_offline_service(index).await?,
+            Err(e) => error!("Failed to check service status {}: {}", service_name, e),
         }
         Ok(())
     }
@@ -120,27 +116,33 @@ impl Monitor for ServicesMonitor {
         "services"
     }
 
-    fn from_config(config: &MonitorsConfig) -> Option<Self> {
-        let services: Vec<MonitoredServiceState> = MONITORED_SERVICES
-            .into_iter()
-            .map(|(service_name, service_level)| MonitoredServiceState {
-                name: service_name.to_string(),
-                level: service_level,
-                is_offline: false,
-                retry_count: 0,
+    fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
+        let services = config
+            .services_monitored
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing services_monitored!"))?
+            .iter()
+            .map(|service| {
+                Ok(MonitoredServiceState {
+                    name: service.name.to_string(),
+                    level: AlertLevel::try_from(service.level).map_err(|e| anyhow::anyhow!(e))?,
+                    is_offline: false,
+                    retry_count: 0,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
         // Only enable if there are services to monitor.
         if services.is_empty() {
-            warn!("There are no services defined to monitor!");
-            None
-        } else {
-            Some(Self {
-                services,
-                interval: config.services_poll_interval,
-            })
+            return Err(anyhow::anyhow!("There are no services defined to monitor!"));
         }
+
+        Ok(Self {
+            services,
+            interval: config.services_poll_interval,
+            retry_attempts: config.services_retry_attempts,
+            retry_delay: std::time::Duration::from_secs(config.services_retry_delay),
+        })
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
@@ -148,8 +150,8 @@ impl Monitor for ServicesMonitor {
 
         debug!("Started with an interval of {} seconds!", self.interval);
         loop {
-            for service in &mut self.services {
-                Self::check_service(service).await?;
+            for i in 0..self.services.len() {
+                self.check_service(i).await?;
             }
             interval.tick().await;
         }

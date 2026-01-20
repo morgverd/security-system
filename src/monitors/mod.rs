@@ -21,7 +21,7 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Creates a new monitor instance with given configuration.
     /// Implementations can override this for custom initialization.
     /// If None is returned, the monitor is not run.
-    fn from_config(config: &MonitorsConfig) -> Option<Self>
+    fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self>
     where
         Self: Sized;
 
@@ -41,8 +41,8 @@ async fn run_monitor<T: Monitor>(mut monitor: T) {
     debug!("Running {} monitor!", T::name());
     loop {
         match monitor.run().await {
-            Ok(_) => info!("Restarting {} monitor!", T::name()),
-            Err(e) => error!("Error in {} monitor: {:#?}", T::name(), e),
+            Ok(_) => info!("Restarting '{}' monitor!", T::name()),
+            Err(e) => error!("Error in '{}' monitor: {:#?}", T::name(), e),
         }
     }
 }
@@ -54,15 +54,15 @@ fn try_from_config<T: Monitor>(
     let name = T::name();
     if let Some(disabled_monitors) = disabled_monitors {
         if disabled_monitors.contains(name) {
-            warn!("The {name} monitor is disabled by config!");
+            warn!("Monitor '{name}' is disabled by config!");
             return None;
         }
     }
 
     match T::from_config(config) {
-        Some(monitor) => Some(tokio::spawn(run_monitor(monitor))),
-        None => {
-            warn!("The {name} monitor is disabled or has invalid configuration!");
+        Ok(monitor) => Some(tokio::spawn(run_monitor(monitor))),
+        Err(e) => {
+            warn!("Monitor '{name}' failed to initialize: {e:?}");
             None
         }
     }

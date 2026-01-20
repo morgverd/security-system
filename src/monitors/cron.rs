@@ -19,13 +19,17 @@ impl Monitor for CronMonitor {
         "cron"
     }
 
-    fn from_config(config: &MonitorsConfig) -> Option<Self> {
-        let cron_url = config.cron_url.as_ref()?;
+    fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
+        let cron_url = config
+            .cron_url
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing cron_url!"))?
+            .clone();
 
         // TODO: Add timeout to client via builder. See PushoverCommunicationProvider.
-        Some(CronMonitor {
+        Ok(CronMonitor {
             client: reqwest::Client::new(),
-            url: cron_url.clone(),
+            url: cron_url,
             interval: config.cron_interval,
         })
     }

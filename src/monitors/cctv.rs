@@ -17,10 +17,16 @@ impl Monitor for CCTVMonitor {
         "cctv"
     }
 
-    fn from_config(config: &MonitorsConfig) -> Option<Self> {
-        Some(Self(PingMonitor::new(
+    fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
+        let ping_addr = config
+            .cctv_local_ip
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Missing cctv_local_ip!"))?
+            .clone();
+
+        Ok(Self(PingMonitor::new(
             "cctv",
-            config.cctv_local_ip.clone()?,
+            ping_addr,
             "The CCTV NVR is now online.",
             "The CCTV NVR is not responding to pings.",
             config,

@@ -18,7 +18,9 @@ fn main() -> anyhow::Result<()> {
     let config = AppConfig::load(Some("config.toml".into()))?;
 
     let mut log_builder = env_logger::Builder::new();
-    log_builder.parse_env(env_logger::Env::default());
+    log_builder
+        .filter_level(log::LevelFilter::Info)
+        .parse_env(env_logger::Env::default());
 
     let _guard = if let Some(ref sentry_dsn) = config.sentry.sentry_dsn {
         info!("Initializing Sentry...");

@@ -77,6 +77,15 @@ pub(crate) struct MonitorsConfig {
     #[serde(default = "default_poll_interval")]
     pub services_poll_interval: u64,
 
+    #[serde(default = "default_services_retry_attempts")]
+    pub services_retry_attempts: u8, // 3
+
+    #[serde(default = "default_services_retry_delay")]
+    pub services_retry_delay: u64, // 5 seconds
+
+    #[serde(default)]
+    pub services_monitored: Option<Vec<MonitoredService>>,
+
     #[serde(default = "default_poll_interval")]
     pub ping_poll_interval: u64,
 
@@ -97,6 +106,9 @@ impl Default for MonitorsConfig {
         Self {
             disabled: None,
             services_poll_interval: default_poll_interval(),
+            services_retry_attempts: default_services_retry_attempts(),
+            services_retry_delay: default_services_retry_delay(),
+            services_monitored: None,
             ping_poll_interval: default_poll_interval(),
             ping_poll_timeout: default_timeout(),
             cctv_local_ip: None,
@@ -104,6 +116,12 @@ impl Default for MonitorsConfig {
             cron_interval: default_poll_interval(),
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct MonitoredService {
+    pub name: String,
+    pub level: u8,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -133,7 +151,7 @@ impl Default for CommunicationsConfig {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub(crate) struct CommunicationRecipient {
-    pub id: String,
+    pub target: String,
 
     #[serde(default = "default_sms_recipient_level")]
     pub level: u8,
@@ -193,6 +211,8 @@ fn default_poll_interval() -> u64 {
 fn default_timeout() -> u64 {
     10
 }
+fn default_services_retry_attempts() -> u8 { 3 }
+fn default_services_retry_delay() -> u64 { 5 }
 fn default_communications_retry_max() -> u64 {
     60
 }

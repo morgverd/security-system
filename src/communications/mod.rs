@@ -5,7 +5,6 @@ use crate::alerts::AlertInfo;
 use crate::communications::pushover::PushoverCommunicationProvider;
 use crate::communications::sms::SMSCommunicationProvider;
 use crate::config::{CommunicationRecipient, CommunicationsConfig};
-use anyhow::{anyhow, Result};
 use log::{debug, error, warn};
 
 pub enum CommunicationSendResultKind {
@@ -23,7 +22,7 @@ pub(crate) trait CommunicationProvider: Send + Sync + 'static {
     /// Creates a new communication provider instance with given configuration.
     /// Implementations can override this for custom initialization.
     /// If None is returned, the provider is invalid / misconfigured and cannot be used.
-    fn from_config(config: &CommunicationsConfig) -> Option<Self>
+    fn from_config(config: &CommunicationsConfig) -> anyhow::Result<Self>
     where
         Self: Sized;
 
@@ -48,19 +47,14 @@ pub(crate) trait CommunicationProvider: Send + Sync + 'static {
 fn try_from_config<T: CommunicationProvider>(
     config: &CommunicationsConfig,
 ) -> Option<(&'static str, Box<dyn CommunicationProvider>)> {
+    let name = T::name();
     match T::from_config(config) {
-        Some(provider) => {
-            debug!("Successfully created CommunicationProvider {}.", T::name());
-            Some((
-                T::name(),
-                Box::new(provider) as Box<dyn CommunicationProvider>,
-            ))
+        Ok(provider) => {
+            debug!("Successfully created CommunicationProvider '{name}'.");
+            Some((name, Box::new(provider) as Box<dyn CommunicationProvider>))
         }
-        None => {
-            warn!(
-                "CommunicationProvider {} has invalid configuration! Failed to initialize.",
-                T::name()
-            );
+        Err(e) => {
+            warn!("CommunicationProvider '{name}' failed to initialize: {e:?}");
             None
         }
     }
@@ -73,7 +67,7 @@ pub(crate) struct CommunicationRegistry {
     retry_delay: std::time::Duration,
 }
 impl CommunicationRegistry {
-    pub fn new(config: &CommunicationsConfig) -> Result<Self> {
+    pub fn new(config: &CommunicationsConfig) -> anyhow::Result<Self> {
         // Attempt to create each provider from_config.
         let providers_vec: Vec<_> = vec![
             try_from_config::<SMSCommunicationProvider>(config),
@@ -85,7 +79,9 @@ impl CommunicationRegistry {
 
         let size = providers_vec.len();
         if size == 0 {
-            return Err(anyhow!("Failed to create any CommunicationProviders!"));
+            return Err(anyhow::anyhow!(
+                "Failed to create any CommunicationProviders!"
+            ));
         }
 
         // Convert to HashMap for more efficient lookups.
@@ -120,7 +116,7 @@ impl CommunicationRegistry {
         let mut recipients = provider.get_recipients(alert);
         if recipients.is_empty() {
             debug!(
-                "There are no recipients for {} with level {:?}",
+                "There are no recipients for '{}' with level {:?}",
                 name, alert.level
             );
             return;
@@ -130,14 +126,14 @@ impl CommunicationRegistry {
             match provider.send(alert, &recipients).await {
                 CommunicationSendResultKind::Completed { failed } if failed.is_empty() => {
                     debug!(
-                        "Sent to all recipients of {} in {} attempt(s)!",
+                        "Sent to all recipients of '{}' in {} attempt(s)!",
                         name, attempt
                     );
                     return;
                 }
                 CommunicationSendResultKind::Completed { failed } => {
                     debug!(
-                        "Attempt #{} for {}: {} recipients failed, retrying after {}s",
+                        "Attempt #{} for '{}': {} recipients failed, retrying after {}s",
                         attempt,
                         name,
                         failed.len(),
@@ -147,7 +143,7 @@ impl CommunicationRegistry {
                     tokio::time::sleep(self.retry_delay).await;
                 }
                 CommunicationSendResultKind::Unavailable { reason } => {
-                    error!("Communication provider {} is unavailable: {}", name, reason);
+                    error!("CommunicationProvider '{}' is unavailable: {}", name, reason);
                     return;
                 }
             }
