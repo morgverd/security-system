@@ -49,7 +49,7 @@ impl Default for ServerConfig {
 #[derive(Default, Debug, serde::Deserialize)]
 pub(crate) struct SentryConfig {
     #[serde(default)]
-    pub sentry_dsn: Option<String>,
+    pub dsn: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]

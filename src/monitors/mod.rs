@@ -38,11 +38,12 @@ pub(crate) trait Monitor: Send + Sync + 'static {
 }
 
 async fn run_monitor<T: Monitor>(mut monitor: T) {
-    debug!("Running {} monitor!", T::name());
+    let name = T::name();
+    debug!("Running {name} monitor!");
     loop {
         match monitor.run().await {
-            Ok(_) => info!("Restarting '{}' monitor!", T::name()),
-            Err(e) => error!("Error in '{}' monitor: {:#?}", T::name(), e),
+            Ok(_) => info!("Restarting '{name}' monitor!"),
+            Err(e) => error!("Error in '{name}' monitor: {:#?}", e),
         }
     }
 }
