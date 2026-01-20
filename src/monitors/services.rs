@@ -121,11 +121,11 @@ impl Monitor for ServicesMonitor {
             .services_monitored
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing services_monitored!"))?
-            .iter()
+            .into_iter()
             .map(|service| {
                 Ok(MonitoredServiceState {
                     name: service.name.to_string(),
-                    level: AlertLevel::try_from(service.level).map_err(|e| anyhow::anyhow!(e))?,
+                    level: AlertLevel::try_from(service.level)?,
                     is_offline: false,
                     retry_count: 0,
                 })
@@ -134,7 +134,7 @@ impl Monitor for ServicesMonitor {
 
         // Only enable if there are services to monitor.
         if services.is_empty() {
-            return Err(anyhow::anyhow!("There are no services defined to monitor!"));
+            anyhow::bail!("There are no services defined to monitor!");
         }
 
         Ok(Self {

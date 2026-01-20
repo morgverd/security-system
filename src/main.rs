@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
         .filter_level(log::LevelFilter::Info)
         .parse_env(env_logger::Env::default());
 
-    let _guard = if let Some(ref sentry_dsn) = config.sentry.sentry_dsn {
+    let _guard = if let Some(ref sentry_dsn) = config.sentry.dsn {
         info!("Initializing Sentry...");
 
         // Ensure Sentry can capture error logs.

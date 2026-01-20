@@ -31,7 +31,7 @@ impl CommunicationProvider for SMSCommunicationProvider {
     {
         let config = match &config.sms {
             Some(config) => config,
-            None => return Err(anyhow::anyhow!("Missing any SMS config!")),
+            None => anyhow::bail!("Missing any SMS config!"),
         };
 
         Ok(Self {

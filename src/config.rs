@@ -78,22 +78,22 @@ pub(crate) struct MonitorsConfig {
     pub services_poll_interval: u64,
 
     #[serde(default = "default_services_retry_attempts")]
-    pub services_retry_attempts: u8, // 3
+    pub services_retry_attempts: u8,
 
     #[serde(default = "default_services_retry_delay")]
-    pub services_retry_delay: u64, // 5 seconds
+    pub services_retry_delay: u64,
 
     #[serde(default)]
     pub services_monitored: Option<Vec<MonitoredService>>,
 
+    #[serde(default)]
+    pub pings_monitored: Option<Vec<MonitoredPingTarget>>,
+
     #[serde(default = "default_poll_interval")]
-    pub ping_poll_interval: u64,
+    pub pings_poll_interval: u64,
 
     #[serde(default = "default_timeout")]
-    pub ping_poll_timeout: u64,
-
-    #[serde(default)]
-    pub cctv_local_ip: Option<String>,
+    pub pings_poll_timeout: u64,
 
     #[serde(default)]
     pub cron_url: Option<String>,
@@ -109,9 +109,9 @@ impl Default for MonitorsConfig {
             services_retry_attempts: default_services_retry_attempts(),
             services_retry_delay: default_services_retry_delay(),
             services_monitored: None,
-            ping_poll_interval: default_poll_interval(),
-            ping_poll_timeout: default_timeout(),
-            cctv_local_ip: None,
+            pings_monitored: None,
+            pings_poll_interval: default_poll_interval(),
+            pings_poll_timeout: default_timeout(),
             cron_url: None,
             cron_interval: default_poll_interval(),
         }
@@ -122,6 +122,13 @@ impl Default for MonitorsConfig {
 pub(crate) struct MonitoredService {
     pub name: String,
     pub level: u8,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct MonitoredPingTarget {
+    pub name: String,
+    pub addr: String,
+    pub level: u8
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -220,5 +227,5 @@ fn default_communications_retry_delay() -> u64 {
     60
 }
 fn default_sms_recipient_level() -> u8 {
-    AlertLevel::Alarm.as_u8()
+    u8::from(&AlertLevel::Alarm)
 }

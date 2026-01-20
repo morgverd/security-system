@@ -65,7 +65,7 @@ impl CommunicationProvider for PushoverCommunicationProvider {
     {
         let config = match &config.pushover {
             Some(config) => config,
-            None => return Err(anyhow::anyhow!("Missing any Pushover config!")),
+            None => anyhow::bail!("Missing any Pushover config!"),
         };
 
         Ok(Self {

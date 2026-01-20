@@ -10,9 +10,9 @@ pub(crate) enum AlertLevel {
     Critical,
     Alarm,
 }
-impl AlertLevel {
-    pub fn as_u8(&self) -> u8 {
-        match self {
+impl From<&AlertLevel> for u8 {
+    fn from(value: &AlertLevel) -> Self {
+        match value {
             AlertLevel::Info => 1,
             AlertLevel::Warning => 2,
             AlertLevel::Critical => 3,
@@ -21,15 +21,15 @@ impl AlertLevel {
     }
 }
 impl TryFrom<u8> for AlertLevel {
-    type Error = &'static str;
+    type Error = anyhow::Error;
 
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+    fn try_from(value: u8) -> Result<AlertLevel, Self::Error> {
         match value {
             1 => Ok(AlertLevel::Info),
             2 => Ok(AlertLevel::Warning),
             3 => Ok(AlertLevel::Critical),
             4 => Ok(AlertLevel::Alarm),
-            _ => Err("Invalid AlertLevel!"),
+            _ => Err(anyhow::anyhow!("Invalid AlertLevel!")),
         }
     }
 }

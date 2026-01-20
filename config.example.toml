@@ -1,13 +1,17 @@
-[sms]
+
+
+[communications.sms]
 http_base = "https://sms-api.internal:3000" # REQUIRED
 certificate_path = "sms-api.internal.ca.crt"
 auth = "test"
 recipients = [ # REQUIRED
-    { phone = "+4412345678", level = 0 }, # Receive all alert levels
-    { phone = "+4487654321", level = 4 }, # Receive only Alarm alerts
+    { target = "+4412345678", level = 3 }, # Receive all alert levels
+    { target = "+4487654321", level = 4 }, # Receive only Alarm alerts
 ]
 
-[pushover]
+
+[communications.pushover]
+token = "abc123"
 recipients = [ # OPTIONAL
-    { id = "abc123_user_token", level = 3 }
+    { target = "abc123_user_token", level = 3 }
 ]

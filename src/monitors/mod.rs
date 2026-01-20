@@ -1,16 +1,10 @@
-mod cctv;
 mod cron;
-mod internet;
 mod ping;
 mod power;
 mod services;
 
 use crate::alerts::{send_alert, AlertInfo, AlertLevel};
 use crate::config::MonitorsConfig;
-use crate::monitors::cctv::CCTVMonitor;
-use crate::monitors::cron::CronMonitor;
-use crate::monitors::internet::InternetMonitor;
-use crate::monitors::services::ServicesMonitor;
 use log::{debug, error, info, warn};
 
 #[async_trait::async_trait]
@@ -72,10 +66,9 @@ fn try_from_config<T: Monitor>(
 pub(crate) async fn spawn_monitors(config: &MonitorsConfig) -> Vec<tokio::task::JoinHandle<()>> {
     let disabled_monitors = config.disabled.as_ref();
     vec![
-        try_from_config::<CCTVMonitor>(config, disabled_monitors),
-        try_from_config::<InternetMonitor>(config, disabled_monitors),
-        try_from_config::<CronMonitor>(config, disabled_monitors),
-        try_from_config::<ServicesMonitor>(config, disabled_monitors),
+        try_from_config::<ping::PingMonitor>(config, disabled_monitors),
+        try_from_config::<cron::CronMonitor>(config, disabled_monitors),
+        try_from_config::<services::ServicesMonitor>(config, disabled_monitors),
     ]
     .into_iter()
     .flatten()

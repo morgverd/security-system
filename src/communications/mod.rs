@@ -31,7 +31,7 @@ pub(crate) trait CommunicationProvider: Send + Sync + 'static {
 
     /// Get all target recipients for the alert level.
     fn get_recipients(&self, alert: &AlertInfo) -> Vec<usize> {
-        let level_u8 = alert.level.as_u8();
+        let level_u8 = u8::from(&alert.level);
         self.get_all_recipients()
             .iter()
             .enumerate()
@@ -79,12 +79,9 @@ impl CommunicationRegistry {
 
         let size = providers_vec.len();
         if size == 0 {
-            return Err(anyhow::anyhow!(
-                "Failed to create any CommunicationProviders!"
-            ));
+            anyhow::bail!("Failed to create any CommunicationProviders!");
         }
 
-        // Convert to HashMap for more efficient lookups.
         let mut providers = std::collections::HashMap::with_capacity(size);
         for (name, provider) in providers_vec {
             providers.insert(name, provider);
