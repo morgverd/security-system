@@ -122,10 +122,7 @@ impl CommunicationRegistry {
         for attempt in 1..=self.retry_max + 1 {
             match provider.send(alert, &recipients).await {
                 CommunicationSendResultKind::Completed { failed } if failed.is_empty() => {
-                    debug!(
-                        "Sent to all recipients of '{}' in {} attempt(s)!",
-                        name, attempt
-                    );
+                    debug!("Sent to all recipients of '{name}' in {attempt} attempt(s)!");
                     return;
                 }
                 CommunicationSendResultKind::Completed { failed } => {
@@ -140,7 +137,7 @@ impl CommunicationRegistry {
                     tokio::time::sleep(self.retry_delay).await;
                 }
                 CommunicationSendResultKind::Unavailable { reason } => {
-                    error!("CommunicationProvider '{}' is unavailable: {}", name, reason);
+                    error!("CommunicationProvider '{name}' is unavailable: {reason}");
                     return;
                 }
             }

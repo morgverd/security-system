@@ -3,34 +3,33 @@ use crate::monitors::Monitor;
 use log::{debug, warn};
 
 /*
-   Send Sentry CRON requests per interval.
-   This is used as remote health-checks for the system.
+   Send healthcheck request per interval.
 */
 
-pub(crate) struct CronMonitor {
+pub(crate) struct HealthcheckMonitor {
     client: reqwest::Client,
     url: String,
     interval: u64,
 }
 
 #[async_trait::async_trait]
-impl Monitor for CronMonitor {
+impl Monitor for HealthcheckMonitor {
     fn name() -> &'static str {
-        "cron"
+        "healthcheck"
     }
 
     fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
-        let cron_url = config
-            .cron_url
+        let url = config
+            .healthcheck
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing cron_url!"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing healthcheck!"))?
             .clone();
 
         // TODO: Add timeout to client via builder. See PushoverCommunicationProvider.
-        Ok(CronMonitor {
+        Ok(HealthcheckMonitor {
             client: reqwest::Client::new(),
-            url: cron_url,
-            interval: config.cron_interval,
+            interval: config.healthcheck_interval,
+            url,
         })
     }
 
@@ -45,12 +44,12 @@ impl Monitor for CronMonitor {
                     if response.status().is_success() {
                         debug!("Successfully sent update!");
                     } else {
-                        warn!("Failed to send CRON request with invalid response status!");
+                        warn!("Failed to send healthcheck with invalid response status!");
                         current_interval = error_interval;
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to send Sentry CRON request with error: {e:#?}");
+                    warn!("Failed to send healthcheck with error: {e:#?}");
                     current_interval = error_interval;
                 }
             }

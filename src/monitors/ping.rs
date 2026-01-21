@@ -1,39 +1,88 @@
-use anyhow::anyhow;
 use crate::alerts::AlertLevel;
 use crate::config::{MonitoredPingTarget, MonitorsConfig};
 use crate::monitors::Monitor;
 use log::{debug, warn};
 
 /*
-   Ping monitor that tracks multiple addresses across
-   the network sending alerts at configured level.
+   Attempt TCP connections to an addr per interval with a timeout.
 */
 
-// TODO: Add timeout and interval to this target directly instead of globally.
+#[derive(Clone)]
 struct PingTarget {
     name: String,
     addr: String,
-    online: bool,
-    level: AlertLevel
+    level: AlertLevel,
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
 }
 impl TryFrom<&MonitoredPingTarget> for PingTarget {
     type Error = anyhow::Error;
 
     fn try_from(value: &MonitoredPingTarget) -> Result<Self, Self::Error> {
-        AlertLevel::try_from(value.level)
-            .map(|level| PingTarget {
-                name: value.name.clone(),
-                addr: value.addr.clone(),
-                online: true,
-                level
-            })
+        AlertLevel::try_from(value.level).map(|level| PingTarget {
+            name: value.name.clone(),
+            addr: value.addr.clone(),
+            level,
+            timeout: std::time::Duration::from_secs(value.timeout.unwrap_or(5)),
+            interval: std::time::Duration::from_secs(value.interval.unwrap_or(60)),
+        })
     }
 }
 
 pub(crate) struct PingMonitor {
     targets: Vec<PingTarget>,
-    interval_duration: std::time::Duration,
-    timeout_duration: std::time::Duration,
+}
+impl PingMonitor {
+    async fn run_target(target: PingTarget) -> anyhow::Result<()> {
+        let mut is_online = true;
+        let seconds = target.interval.as_secs();
+        loop {
+            let currently_online = match tokio::time::timeout(
+                target.timeout,
+                tokio::net::TcpStream::connect(&target.addr),
+            )
+            .await
+            {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    warn!("[{}] Ping error to {}: {}", target.name, target.addr, e);
+                    false
+                }
+                Err(_) => {
+                    warn!(
+                        "[{}] Ping timeout ({:?}) to {}!",
+                        target.name, target.timeout, target.addr
+                    );
+                    false
+                }
+            };
+
+            debug!(
+                "[{}, {seconds}s] Ping to {}: {}",
+                target.name,
+                target.addr,
+                if currently_online {
+                    "Online"
+                } else {
+                    "Offline"
+                }
+            );
+
+            if currently_online != is_online {
+                is_online = currently_online;
+                let message = if currently_online {
+                    format!("[{}] Now online!", target.name)
+                } else {
+                    format!("[{}] Now offline!", target.name)
+                };
+
+                debug!("{message}");
+                Self::send_alert(message, target.level.clone()).await?;
+            }
+
+            tokio::time::sleep(target.interval).await;
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -43,67 +92,38 @@ impl Monitor for PingMonitor {
     }
 
     fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
-        // I'm getting nasty at method chaining
         let targets: Vec<_> = config
-            .pings_monitored
+            .pings
             .as_ref()
-            .ok_or_else(|| anyhow!("Missing pings_monitored!"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing pings_monitored!"))?
             .iter()
-            .map(|a| PingTarget::try_from(a))
+            .map(PingTarget::try_from)
             .collect::<Result<_, _>>()?;
 
         if targets.is_empty() {
             anyhow::bail!("No ping targets configured!");
         }
 
-        Ok(Self {
-            targets,
-            interval_duration: std::time::Duration::from_secs(config.pings_poll_interval),
-            timeout_duration: std::time::Duration::from_secs(config.pings_poll_timeout),
-        })
+        Ok(Self { targets })
     }
 
     async fn run(&mut self) -> anyhow::Result<()> {
-        loop {
-            for target in &mut self.targets {
-                let online = match tokio::time::timeout(
-                    self.timeout_duration,
-                    tokio::net::TcpStream::connect(&target.addr),
-                )
-                    .await
-                {
-                    Ok(Ok(_)) => true,
-                    Ok(Err(e)) => {
-                        warn!("[{}] Ping error to {}: {}", target.name, target.addr, e);
-                        false
-                    }
-                    Err(_) => {
-                        warn!("[{}] Ping timeout to {}!", target.name, target.addr);
-                        false
-                    }
-                };
+        let handles: Vec<_> = self
+            .targets
+            .iter()
+            .cloned()
+            .map(|target| tokio::spawn(async move { Self::run_target(target).await }))
+            .collect();
 
-                debug!(
-                    "[{}] Ping to {}: {}",
-                    target.name,
-                    target.addr,
-                    if online { "Online" } else { "Offline" }
-                );
-
-                if online != target.online {
-                    target.online = online;
-                    let message = if online {
-                        format!("[{}] Now online!", target.name)
-                    } else {
-                        format!("[{}] Now offline!", target.name)
-                    };
-
-                    debug!("{message}");
-                    Self::send_alert(message.clone(), target.level.clone()).await?;
-                }
+        // Wait for any task to complete (they shouldn't unless there's an error)
+        for result in futures::future::join_all(handles).await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(e) => anyhow::bail!("Task panicked: {}", e),
             }
-
-            tokio::time::sleep(self.interval_duration).await;
         }
+
+        Ok(())
     }
 }

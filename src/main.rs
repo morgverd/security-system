@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         .build()?
         .block_on(async {
             // Create alarm manager task with shutdown signals.
-            let (alarm_shutdown_tx, alarm_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+            let (alerts_shutdown_tx, alarm_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
             let manager = initialize_alert_manager(&config)
                 .await
                 .expect("Failed to initialize AlertManager!");
@@ -88,7 +88,7 @@ fn main() -> anyhow::Result<()> {
             let (warp_shutdown_tx, warp_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
             let warp_handle = tokio::spawn(async move {
                 let (addr, server) = warp::serve(get_routes()).bind_with_graceful_shutdown(
-                    config.server.http_addr,
+                    config.http.bind_address,
                     async move {
                         let _ = warp_shutdown_rx.await;
                     },
@@ -115,7 +115,7 @@ fn main() -> anyhow::Result<()> {
 
             // Send shutdown signals.
             info!("Shutting down services...");
-            let _ = alarm_shutdown_tx.send(());
+            let _ = alerts_shutdown_tx.send(());
             let _ = warp_shutdown_tx.send(());
 
             // Wait for tasks to terminate gracefully.

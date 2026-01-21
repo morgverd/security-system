@@ -1,11 +1,11 @@
-mod cron;
+mod healthcheck;
 mod ping;
 mod power;
-mod services;
+mod systemctl;
 
 use crate::alerts::{send_alert, AlertInfo, AlertLevel};
 use crate::config::MonitorsConfig;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 
 #[async_trait::async_trait]
 pub(crate) trait Monitor: Send + Sync + 'static {
@@ -26,18 +26,18 @@ pub(crate) trait Monitor: Send + Sync + 'static {
     /// Helper method to send alerts with the monitors name as the source.
     async fn send_alert(message: String, level: AlertLevel) -> anyhow::Result<()> {
         let name = Self::name().to_string();
-        let alert = AlertInfo::new(format!("{name}-monitor"), message, level)?;
+        let alert = AlertInfo::new(format!("{name} monitor"), message, level)?;
         send_alert(alert).await
     }
 }
 
 async fn run_monitor<T: Monitor>(mut monitor: T) {
     let name = T::name();
-    debug!("Running {name} monitor!");
+    info!("Starting '{name}' monitor!");
     loop {
         match monitor.run().await {
             Ok(_) => info!("Restarting '{name}' monitor!"),
-            Err(e) => error!("Error in '{name}' monitor: {:#?}", e),
+            Err(e) => error!("Error in '{name}' monitor: {e:#?}"),
         }
     }
 }
@@ -67,8 +67,8 @@ pub(crate) async fn spawn_monitors(config: &MonitorsConfig) -> Vec<tokio::task::
     let disabled_monitors = config.disabled.as_ref();
     vec![
         try_from_config::<ping::PingMonitor>(config, disabled_monitors),
-        try_from_config::<cron::CronMonitor>(config, disabled_monitors),
-        try_from_config::<services::ServicesMonitor>(config, disabled_monitors),
+        try_from_config::<healthcheck::HealthcheckMonitor>(config, disabled_monitors),
+        try_from_config::<systemctl::SystemctlMonitor>(config, disabled_monitors),
     ]
     .into_iter()
     .flatten()

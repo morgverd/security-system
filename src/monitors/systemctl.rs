@@ -4,25 +4,25 @@ use crate::monitors::Monitor;
 use log::{debug, error, info};
 
 /*
-   Check that a set of other important systemd services are still running.
+   Check that a set of other important systemctl services are still running.
    If they stop running, attempt to restart them. If that fails, send out
    alerts with differing AlertLevels based on the importance of the service.
 */
 
-struct MonitoredServiceState {
+struct MonitoredSystemctlState {
     name: String,
     level: AlertLevel,
     is_offline: bool,
     retry_count: u8,
 }
 
-pub(crate) struct ServicesMonitor {
-    services: Vec<MonitoredServiceState>,
+pub(crate) struct SystemctlMonitor {
+    services: Vec<MonitoredSystemctlState>,
     interval: u64,
     retry_attempts: u8,
     retry_delay: std::time::Duration,
 }
-impl ServicesMonitor {
+impl SystemctlMonitor {
     async fn is_service_active(name: &str) -> anyhow::Result<bool> {
         let output = tokio::process::Command::new("systemctl")
             .arg("is-active")
@@ -75,7 +75,7 @@ impl ServicesMonitor {
                 ),
                 service.level.clone(),
             )
-                .await?;
+            .await?;
         }
 
         Ok(())
@@ -96,34 +96,34 @@ impl ServicesMonitor {
                     service.retry_count = 0;
 
                     Self::send_alert(
-                        format!("{} is now ONLINE!", service_name),
+                        format!("{service_name} is now ONLINE!"),
                         service.level.clone(),
                     )
-                        .await?;
+                    .await?;
                 }
             }
             Ok(false) => self.handle_offline_service(index).await?,
-            Err(e) => error!("Failed to check service status {}: {}", service_name, e),
+            Err(e) => error!("Failed to check service status {service_name}: {e}"),
         }
         Ok(())
     }
 }
 
 #[async_trait::async_trait]
-impl Monitor for ServicesMonitor {
+impl Monitor for SystemctlMonitor {
     #[inline]
     fn name() -> &'static str {
-        "services"
+        "system_ctl"
     }
 
     fn from_config(config: &MonitorsConfig) -> anyhow::Result<Self> {
         let services = config
-            .services_monitored
+            .systemctl
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing services_monitored!"))?
-            .into_iter()
+            .iter()
             .map(|service| {
-                Ok(MonitoredServiceState {
+                Ok(MonitoredSystemctlState {
                     name: service.name.to_string(),
                     level: AlertLevel::try_from(service.level)?,
                     is_offline: false,
@@ -139,9 +139,9 @@ impl Monitor for ServicesMonitor {
 
         Ok(Self {
             services,
-            interval: config.services_poll_interval,
-            retry_attempts: config.services_retry_attempts,
-            retry_delay: std::time::Duration::from_secs(config.services_retry_delay),
+            interval: config.systemctl_poll_interval,
+            retry_attempts: config.systemctl_retry_attempts,
+            retry_delay: std::time::Duration::from_secs(config.systemctl_retry_delay),
         })
     }
 

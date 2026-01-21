@@ -38,7 +38,7 @@ impl PushoverCommunicationProvider {
         PushoverPayload {
             token: self.config.token.clone(),
             user: recipient.target.clone(),
-            title: alert.source.clone(),
+            title: format!("sentinel - {}", alert.source.clone()),
             message: alert.message.clone(),
             priority: match alert.level {
                 AlertLevel::Info => -1,

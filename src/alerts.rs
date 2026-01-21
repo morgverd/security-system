@@ -106,6 +106,14 @@ impl AlertManager {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         debug!("AlertManager starting to process channel alerts...");
+        self.execute(AlertInfo {
+            source: "startup".to_string(),
+            message: "Sentinel is online".to_string(),
+            level: AlertLevel::Info,
+            timestamp: None,
+        })
+        .await;
+
         while let Some(alert) = self.receiver.recv().await {
             self.execute(alert).await;
         }

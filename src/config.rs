@@ -4,7 +4,7 @@ use anyhow::Context;
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct AppConfig {
     #[serde(default)]
-    pub server: ServerConfig,
+    pub http: HttpConfig,
 
     #[serde(default)]
     pub sentry: SentryConfig,
@@ -34,14 +34,14 @@ impl AppConfig {
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub(crate) struct ServerConfig {
-    #[serde(default = "default_http_addr")]
-    pub http_addr: std::net::SocketAddr,
+pub(crate) struct HttpConfig {
+    #[serde(default = "default_bind_address")]
+    pub bind_address: std::net::SocketAddr,
 }
-impl Default for ServerConfig {
+impl Default for HttpConfig {
     fn default() -> Self {
         Self {
-            http_addr: default_http_addr(),
+            bind_address: default_bind_address(),
         }
     }
 }
@@ -75,45 +75,37 @@ pub(crate) struct MonitorsConfig {
     pub disabled: Option<std::collections::HashSet<String>>,
 
     #[serde(default = "default_poll_interval")]
-    pub services_poll_interval: u64,
+    pub systemctl_poll_interval: u64,
 
-    #[serde(default = "default_services_retry_attempts")]
-    pub services_retry_attempts: u8,
+    #[serde(default = "default_systemctl_retry_attempts")]
+    pub systemctl_retry_attempts: u8,
 
-    #[serde(default = "default_services_retry_delay")]
-    pub services_retry_delay: u64,
-
-    #[serde(default)]
-    pub services_monitored: Option<Vec<MonitoredService>>,
+    #[serde(default = "default_systemctl_retry_delay")]
+    pub systemctl_retry_delay: u64,
 
     #[serde(default)]
-    pub pings_monitored: Option<Vec<MonitoredPingTarget>>,
+    pub systemctl: Option<Vec<MonitoredService>>,
+
+    #[serde(default)]
+    pub pings: Option<Vec<MonitoredPingTarget>>,
+
+    #[serde(default)]
+    pub healthcheck: Option<String>,
 
     #[serde(default = "default_poll_interval")]
-    pub pings_poll_interval: u64,
-
-    #[serde(default = "default_timeout")]
-    pub pings_poll_timeout: u64,
-
-    #[serde(default)]
-    pub cron_url: Option<String>,
-
-    #[serde(default = "default_poll_interval")]
-    pub cron_interval: u64,
+    pub healthcheck_interval: u64,
 }
 impl Default for MonitorsConfig {
     fn default() -> Self {
         Self {
             disabled: None,
-            services_poll_interval: default_poll_interval(),
-            services_retry_attempts: default_services_retry_attempts(),
-            services_retry_delay: default_services_retry_delay(),
-            services_monitored: None,
-            pings_monitored: None,
-            pings_poll_interval: default_poll_interval(),
-            pings_poll_timeout: default_timeout(),
-            cron_url: None,
-            cron_interval: default_poll_interval(),
+            systemctl_poll_interval: default_poll_interval(),
+            systemctl_retry_attempts: default_systemctl_retry_attempts(),
+            systemctl_retry_delay: default_systemctl_retry_delay(),
+            systemctl: None,
+            pings: None,
+            healthcheck: None,
+            healthcheck_interval: default_poll_interval(),
         }
     }
 }
@@ -128,7 +120,13 @@ pub(crate) struct MonitoredService {
 pub(crate) struct MonitoredPingTarget {
     pub name: String,
     pub addr: String,
-    pub level: u8
+    pub level: u8,
+
+    #[serde(default)]
+    pub timeout: Option<u64>,
+
+    #[serde(default)]
+    pub interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -200,7 +198,13 @@ impl SMSCommunicationConfig {
     }
 }
 
-fn default_http_addr() -> std::net::SocketAddr {
+fn default_poll_interval() -> u64 {
+    60
+}
+fn default_timeout() -> u64 {
+    10
+}
+fn default_bind_address() -> std::net::SocketAddr {
     std::net::SocketAddr::new(
         std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
         8080,
@@ -212,14 +216,12 @@ fn default_alarm_cooldown() -> u64 {
 fn default_alerts_send_concurrency_limit() -> usize {
     10
 }
-fn default_poll_interval() -> u64 {
-    60
+fn default_systemctl_retry_attempts() -> u8 {
+    30
 }
-fn default_timeout() -> u64 {
-    10
+fn default_systemctl_retry_delay() -> u64 {
+    5
 }
-fn default_services_retry_attempts() -> u8 { 3 }
-fn default_services_retry_delay() -> u64 { 5 }
 fn default_communications_retry_max() -> u64 {
     60
 }

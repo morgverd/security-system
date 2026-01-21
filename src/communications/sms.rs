@@ -14,7 +14,7 @@ impl SMSCommunicationProvider {
     ) -> sms_client::types::sms::SmsOutgoingMessage {
         sms_client::types::sms::SmsOutgoingMessage::simple_message(
             recipient.target.clone(),
-            alert.to_string(),
+            format!("sentinel - {alert}"),
         )
     }
 }
